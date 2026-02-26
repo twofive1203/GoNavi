@@ -306,6 +306,10 @@ export function SelectDriverPackageFile(arg1) {
   return window['go']['app']['App']['SelectDriverPackageFile'](arg1);
 }
 
+export function SelectSSHKeyFile(arg1) {
+  return window['go']['app']['App']['SelectSSHKeyFile'](arg1);
+}
+
 export function SetWindowTranslucency(arg1, arg2) {
   return window['go']['app']['App']['SetWindowTranslucency'](arg1, arg2);
 }

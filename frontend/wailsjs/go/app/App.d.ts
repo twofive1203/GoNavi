@@ -156,6 +156,8 @@ export function SelectDriverDownloadDirectory(arg1:string):Promise<connection.Qu
 
 export function SelectDriverPackageFile(arg1:string):Promise<connection.QueryResult>;
 
+export function SelectSSHKeyFile(arg1:string):Promise<connection.QueryResult>;
+
 export function SetWindowTranslucency(arg1:number,arg2:number):Promise<void>;
 
 export function TestConnection(arg1:connection.ConnectionConfig):Promise<connection.QueryResult>;

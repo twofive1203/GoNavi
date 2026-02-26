@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,6 +76,48 @@ func (a *App) ImportConfigFile() connection.QueryResult {
 	}
 
 	return connection.QueryResult{Success: true, Data: string(content)}
+}
+
+func (a *App) SelectSSHKeyFile(currentPath string) connection.QueryResult {
+	defaultDir := strings.TrimSpace(currentPath)
+	if defaultDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			defaultDir = filepath.Join(home, ".ssh")
+		}
+	}
+	if filepath.Ext(defaultDir) != "" {
+		defaultDir = filepath.Dir(defaultDir)
+	}
+	if defaultDir != "" && !filepath.IsAbs(defaultDir) {
+		if abs, err := filepath.Abs(defaultDir); err == nil {
+			defaultDir = abs
+		}
+	}
+
+	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:            "选择 SSH 私钥文件",
+		DefaultDirectory: defaultDir,
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: "私钥文件",
+				Pattern:     "*.pem;*.key;*.ppk;*id_rsa*",
+			},
+			{
+				DisplayName: "所有文件",
+				Pattern:     "*",
+			},
+		},
+	})
+	if err != nil {
+		return connection.QueryResult{Success: false, Message: err.Error()}
+	}
+	if strings.TrimSpace(selection) == "" {
+		return connection.QueryResult{Success: false, Message: "Cancelled"}
+	}
+	if abs, err := filepath.Abs(selection); err == nil {
+		selection = abs
+	}
+	return connection.QueryResult{Success: true, Data: map[string]interface{}{"path": selection}}
 }
 
 // PreviewImportFile 解析导入文件，返回字段列表、总行数、前 5 行预览数据

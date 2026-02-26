@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Modal, Form, Input, InputNumber, Button, message, Checkbox, Divider, Select, Alert, Card, Row, Col, Typography, Collapse, Space, Table, Tag } from 'antd';
 import { DatabaseOutlined, ConsoleSqlOutlined, FileTextOutlined, CloudServerOutlined, AppstoreAddOutlined, CloudOutlined, CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
 import { useStore } from '../store';
-import { DBGetDatabases, GetDriverStatusList, MongoDiscoverMembers, TestConnection, RedisConnect } from '../../wailsjs/go/app/App';
+import { DBGetDatabases, GetDriverStatusList, MongoDiscoverMembers, TestConnection, RedisConnect, SelectSSHKeyFile } from '../../wailsjs/go/app/App';
 import { MongoMemberInfo, SavedConnection } from '../types';
 
 const { Meta } = Card;
@@ -71,6 +71,7 @@ const ConnectionModal: React.FC<{
   const [typeSelectWarning, setTypeSelectWarning] = useState<{ driverName: string; reason: string } | null>(null);
   const [driverStatusMap, setDriverStatusMap] = useState<Record<string, DriverStatusSnapshot>>({});
   const [driverStatusLoaded, setDriverStatusLoaded] = useState(false);
+  const [selectingSSHKey, setSelectingSSHKey] = useState(false);
   const testInFlightRef = useRef(false);
   const testTimerRef = useRef<number | null>(null);
   const addConnection = useStore((state) => state.addConnection);
@@ -575,6 +576,30 @@ const ConnectionModal: React.FC<{
           setUriFeedback({ type: 'success', message: 'URI 已复制' });
       } catch {
           setUriFeedback({ type: 'error', message: '复制失败' });
+      }
+  };
+
+  const handleSelectSSHKeyFile = async () => {
+      if (selectingSSHKey) {
+          return;
+      }
+      try {
+          setSelectingSSHKey(true);
+          const currentPath = String(form.getFieldValue('sshKeyPath') || '').trim();
+          const res = await SelectSSHKeyFile(currentPath);
+          if (res?.success) {
+              const data = res.data || {};
+              const selectedPath = typeof data === 'string' ? data : String(data.path || '').trim();
+              if (selectedPath) {
+                  form.setFieldValue('sshKeyPath', selectedPath);
+              }
+          } else if (res?.message !== 'Cancelled') {
+              message.error(`选择私钥文件失败: ${res?.message || '未知错误'}`);
+          }
+      } catch (e: any) {
+          message.error(`选择私钥文件失败: ${e?.message || String(e)}`);
+      } finally {
+          setSelectingSSHKey(false);
       }
   };
 
@@ -1493,8 +1518,15 @@ const ConnectionModal: React.FC<{
                             <Input.Password placeholder="密码" />
                         </Form.Item>
                     </div>
-                     <Form.Item name="sshKeyPath" label="私钥路径 (可选)" help="例如: /Users/name/.ssh/id_rsa">
-                        <Input placeholder="绝对路径" />
+                    <Form.Item label="私钥路径 (可选)" help="例如: /Users/name/.ssh/id_rsa">
+                        <Space.Compact style={{ width: '100%' }}>
+                            <Form.Item name="sshKeyPath" noStyle>
+                                <Input placeholder="绝对路径" />
+                            </Form.Item>
+                            <Button onClick={handleSelectSSHKeyFile} loading={selectingSSHKey}>
+                                浏览...
+                            </Button>
+                        </Space.Compact>
                     </Form.Item>
                 </div>
             )}
