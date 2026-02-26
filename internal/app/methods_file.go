@@ -485,7 +485,8 @@ func (a *App) ExportTable(config connection.ConnectionConfig, dbName string, tab
 		if err := writeSQLHeader(w, runConfig, dbName); err != nil {
 			return connection.QueryResult{Success: false, Message: err.Error()}
 		}
-		if err := dumpTableSQL(w, dbInst, runConfig, dbName, tableName, true, true); err != nil {
+		viewLookup := listViewNameLookup(dbInst, runConfig, dbName)
+		if err := dumpTableSQL(w, dbInst, runConfig, dbName, tableName, true, true, viewLookup); err != nil {
 			return connection.QueryResult{Success: false, Message: err.Error()}
 		}
 		if err := writeSQLFooter(w, runConfig); err != nil {
@@ -556,7 +557,7 @@ func (a *App) exportTablesSQL(config connection.ConnectionConfig, dbName string,
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	tables := make([]string, 0, len(tableNames))
+	objects := make([]string, 0, len(tableNames))
 	seen := make(map[string]struct{}, len(tableNames))
 	for _, t := range tableNames {
 		t = strings.TrimSpace(t)
@@ -567,9 +568,10 @@ func (a *App) exportTablesSQL(config connection.ConnectionConfig, dbName string,
 			continue
 		}
 		seen[t] = struct{}{}
-		tables = append(tables, t)
+		objects = append(objects, t)
 	}
-	sort.Strings(tables)
+	viewLookup := listViewNameLookup(dbInst, runConfig, dbName)
+	objects = buildExportObjectOrder(runConfig, dbName, objects, viewLookup, false)
 
 	f, err := os.Create(filename)
 	if err != nil {
@@ -583,8 +585,8 @@ func (a *App) exportTablesSQL(config connection.ConnectionConfig, dbName string,
 	if err := writeSQLHeader(w, runConfig, dbName); err != nil {
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
-	for _, t := range tables {
-		if err := dumpTableSQL(w, dbInst, runConfig, dbName, t, includeSchema, includeData); err != nil {
+	for _, objectName := range objects {
+		if err := dumpTableSQL(w, dbInst, runConfig, dbName, objectName, includeSchema, includeData, viewLookup); err != nil {
 			return connection.QueryResult{Success: false, Message: err.Error()}
 		}
 	}
@@ -623,7 +625,8 @@ func (a *App) ExportDatabaseSQL(config connection.ConnectionConfig, dbName strin
 	if err != nil {
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
-	sort.Strings(tables)
+	viewLookup := listViewNameLookup(dbInst, runConfig, dbName)
+	objects := buildExportObjectOrder(runConfig, dbName, tables, viewLookup, true)
 
 	f, err := os.Create(filename)
 	if err != nil {
@@ -637,8 +640,8 @@ func (a *App) ExportDatabaseSQL(config connection.ConnectionConfig, dbName strin
 	if err := writeSQLHeader(w, runConfig, dbName); err != nil {
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
-	for _, t := range tables {
-		if err := dumpTableSQL(w, dbInst, runConfig, dbName, t, true, includeData); err != nil {
+	for _, objectName := range objects {
+		if err := dumpTableSQL(w, dbInst, runConfig, dbName, objectName, true, includeData, viewLookup); err != nil {
 			return connection.QueryResult{Success: false, Message: err.Error()}
 		}
 	}
@@ -743,6 +746,404 @@ func ensureSQLTerminator(sql string) string {
 	return sql + ";"
 }
 
+func buildExportObjectOrder(
+	config connection.ConnectionConfig,
+	dbName string,
+	rawObjects []string,
+	viewLookup map[string]string,
+	includeAllViews bool,
+) []string {
+	tableSet := make(map[string]string, len(rawObjects))
+	viewSet := make(map[string]string, len(rawObjects))
+
+	for _, rawName := range rawObjects {
+		objectName := strings.TrimSpace(rawName)
+		if objectName == "" {
+			continue
+		}
+		key := normalizeExportObjectKey(config, dbName, objectName)
+		if key == "" {
+			continue
+		}
+		if canonicalViewName, ok := viewLookup[key]; ok {
+			if strings.TrimSpace(canonicalViewName) == "" {
+				canonicalViewName = objectName
+			}
+			viewSet[key] = canonicalViewName
+			delete(tableSet, key)
+			continue
+		}
+		if _, isView := viewSet[key]; isView {
+			continue
+		}
+		if _, exists := tableSet[key]; !exists {
+			tableSet[key] = objectName
+		}
+	}
+
+	if includeAllViews {
+		for key, viewName := range viewLookup {
+			canonicalViewName := strings.TrimSpace(viewName)
+			if canonicalViewName == "" {
+				continue
+			}
+			viewSet[key] = canonicalViewName
+			delete(tableSet, key)
+		}
+	}
+
+	tables := mapValuesSorted(tableSet)
+	views := mapValuesSorted(viewSet)
+	return append(tables, views...)
+}
+
+func mapValuesSorted(values map[string]string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func normalizeExportObjectKey(config connection.ConnectionConfig, dbName string, objectName string) string {
+	schemaName, pureName := normalizeSchemaAndTable(config, dbName, objectName)
+	return normalizeExportObjectKeyByParts(schemaName, pureName)
+}
+
+func normalizeExportObjectKeyByParts(schemaName, objectName string) string {
+	return strings.ToLower(strings.TrimSpace(qualifyTable(schemaName, objectName)))
+}
+
+func listViewNameLookup(dbInst db.Database, config connection.ConnectionConfig, dbName string) map[string]string {
+	viewLookup := make(map[string]string)
+	queries := buildListViewQueries(config, dbName)
+	for _, query := range queries {
+		if strings.TrimSpace(query) == "" {
+			continue
+		}
+		rows, _, err := dbInst.Query(query)
+		if err != nil {
+			continue
+		}
+		for _, row := range rows {
+			tableType := strings.ToUpper(exportRowValueCI(row, "table_type", "type"))
+			if tableType != "" && tableType != "VIEW" {
+				continue
+			}
+			schemaName := exportRowValueCI(row, "schema_name", "table_schema", "owner", "schema", "db")
+			viewName := exportRowValueCI(row, "object_name", "view_name", "table_name", "name")
+			if viewName == "" {
+				viewName = exportInferObjectName(row)
+			}
+			if strings.TrimSpace(viewName) == "" {
+				continue
+			}
+			fullName := strings.TrimSpace(qualifyTable(schemaName, viewName))
+			if fullName == "" {
+				fullName = strings.TrimSpace(viewName)
+			}
+			key := normalizeExportObjectKey(config, dbName, fullName)
+			if key == "" {
+				continue
+			}
+			if _, exists := viewLookup[key]; !exists {
+				viewLookup[key] = fullName
+			}
+		}
+	}
+	return viewLookup
+}
+
+func buildListViewQueries(config connection.ConnectionConfig, dbName string) []string {
+	dbType := resolveDDLDBType(config)
+	escapedDbName := escapeSQLLiteral(dbName)
+	switch dbType {
+	case "mysql", "mariadb", "diros", "sphinx":
+		queries := []string{
+			fmt.Sprintf(`SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS object_name, TABLE_TYPE AS table_type FROM information_schema.tables WHERE TABLE_TYPE='VIEW' AND TABLE_SCHEMA='%s' ORDER BY TABLE_NAME`, escapedDbName),
+		}
+		if strings.TrimSpace(dbName) != "" {
+			queries = append(queries, fmt.Sprintf("SHOW FULL TABLES FROM %s WHERE Table_type = 'VIEW'", quoteIdentByType("mysql", dbName)))
+		}
+		return queries
+	case "postgres", "kingbase", "highgo", "vastbase":
+		return []string{
+			`SELECT table_schema AS schema_name, table_name AS object_name FROM information_schema.views WHERE table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY table_schema, table_name`,
+		}
+	case "sqlserver":
+		safeDBName := strings.TrimSpace(config.Database)
+		if safeDBName == "" {
+			safeDBName = strings.TrimSpace(dbName)
+		}
+		if safeDBName == "" {
+			return nil
+		}
+		safeDB := quoteIdentByType("sqlserver", safeDBName)
+		return []string{
+			fmt.Sprintf(`SELECT s.name AS schema_name, v.name AS object_name FROM %s.sys.views v JOIN %s.sys.schemas s ON v.schema_id = s.schema_id ORDER BY s.name, v.name`, safeDB, safeDB),
+		}
+	case "oracle", "dameng":
+		if strings.TrimSpace(dbName) == "" {
+			return []string{
+				`SELECT VIEW_NAME AS object_name FROM user_views ORDER BY VIEW_NAME`,
+			}
+		}
+		return []string{
+			fmt.Sprintf("SELECT OWNER AS schema_name, VIEW_NAME AS object_name FROM all_views WHERE OWNER = '%s' ORDER BY VIEW_NAME", strings.ToUpper(escapedDbName)),
+		}
+	case "sqlite":
+		return []string{
+			"SELECT name AS object_name FROM sqlite_master WHERE type='view' ORDER BY name",
+		}
+	case "duckdb":
+		return []string{
+			`SELECT table_schema AS schema_name, table_name AS object_name FROM information_schema.views WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ORDER BY table_schema, table_name`,
+		}
+	default:
+		if strings.TrimSpace(dbName) == "" {
+			return []string{
+				`SELECT table_schema AS schema_name, table_name AS object_name FROM information_schema.views`,
+			}
+		}
+		return []string{
+			fmt.Sprintf(`SELECT table_schema AS schema_name, table_name AS object_name FROM information_schema.views WHERE table_schema='%s'`, escapedDbName),
+		}
+	}
+}
+
+func tryGetViewCreateStatement(
+	dbInst db.Database,
+	config connection.ConnectionConfig,
+	dbName string,
+	schemaName string,
+	viewName string,
+) (string, bool) {
+	queries := buildViewCreateQueries(config, dbName, schemaName, viewName)
+	for _, query := range queries {
+		if strings.TrimSpace(query) == "" {
+			continue
+		}
+		rows, _, err := dbInst.Query(query)
+		if err != nil || len(rows) == 0 {
+			continue
+		}
+		createSQL := strings.TrimSpace(extractViewCreateSQL(rows[0]))
+		if createSQL == "" {
+			continue
+		}
+		if looksLikeSelectOrWith(createSQL) {
+			qualifiedView := qualifyTable(schemaName, viewName)
+			createSQL = fmt.Sprintf("CREATE VIEW %s AS %s", quoteQualifiedIdentByType(config.Type, qualifiedView), strings.TrimSuffix(strings.TrimSpace(createSQL), ";"))
+		}
+		return ensureSQLTerminator(createSQL), true
+	}
+	return "", false
+}
+
+func buildViewCreateQueries(config connection.ConnectionConfig, dbName, schemaName, viewName string) []string {
+	dbType := resolveDDLDBType(config)
+	safeSchema := strings.TrimSpace(schemaName)
+	safeView := strings.TrimSpace(viewName)
+	if safeView == "" {
+		return nil
+	}
+	escapedSchema := escapeSQLLiteral(safeSchema)
+	escapedView := escapeSQLLiteral(safeView)
+	escapedDB := escapeSQLLiteral(dbName)
+
+	switch dbType {
+	case "mysql", "mariadb", "diros", "sphinx":
+		if safeSchema == "" {
+			safeSchema = strings.TrimSpace(dbName)
+		}
+		if safeSchema != "" {
+			return []string{
+				fmt.Sprintf("SHOW CREATE VIEW %s.%s", quoteIdentByType("mysql", safeSchema), quoteIdentByType("mysql", safeView)),
+			}
+		}
+		return []string{
+			fmt.Sprintf("SHOW CREATE VIEW %s", quoteIdentByType("mysql", safeView)),
+		}
+	case "postgres", "kingbase", "highgo", "vastbase":
+		if safeSchema == "" {
+			safeSchema = "public"
+		}
+		regClassName := fmt.Sprintf(`"%s"."%s"`, strings.ReplaceAll(safeSchema, `"`, `""`), strings.ReplaceAll(safeView, `"`, `""`))
+		regClassName = strings.ReplaceAll(regClassName, "'", "''")
+		return []string{
+			fmt.Sprintf("SELECT pg_get_viewdef('%s'::regclass, true) AS ddl", regClassName),
+		}
+	case "sqlserver":
+		schema := safeSchema
+		if schema == "" {
+			schema = "dbo"
+		}
+		safeDBName := strings.TrimSpace(config.Database)
+		if safeDBName == "" {
+			safeDBName = strings.TrimSpace(dbName)
+		}
+		if safeDBName == "" {
+			return nil
+		}
+		safeDB := quoteIdentByType("sqlserver", safeDBName)
+		return []string{
+			fmt.Sprintf(`SELECT m.definition AS ddl
+FROM %s.sys.views v
+JOIN %s.sys.schemas s ON v.schema_id = s.schema_id
+JOIN %s.sys.sql_modules m ON v.object_id = m.object_id
+WHERE s.name = '%s' AND v.name = '%s'`,
+				safeDB, safeDB, safeDB, escapeSQLLiteral(schema), escapedView),
+		}
+	case "oracle", "dameng":
+		if safeSchema == "" {
+			safeSchema = strings.TrimSpace(dbName)
+		}
+		if safeSchema != "" {
+			return []string{
+				fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('VIEW', '%s', '%s') AS ddl FROM DUAL", strings.ToUpper(escapedView), strings.ToUpper(escapeSQLLiteral(safeSchema))),
+			}
+		}
+		return []string{
+			fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('VIEW', '%s') AS ddl FROM DUAL", strings.ToUpper(escapedView)),
+		}
+	case "sqlite":
+		return []string{
+			fmt.Sprintf("SELECT sql AS ddl FROM sqlite_master WHERE type='view' AND name='%s'", escapedView),
+		}
+	case "duckdb":
+		if safeSchema == "" {
+			safeSchema = "main"
+			escapedSchema = "main"
+		}
+		return []string{
+			fmt.Sprintf("SELECT sql AS ddl FROM duckdb_views() WHERE view_name = '%s' AND schema_name = '%s' LIMIT 1", escapedView, escapedSchema),
+			fmt.Sprintf("SELECT view_definition AS ddl FROM information_schema.views WHERE table_name = '%s' AND table_schema = '%s' LIMIT 1", escapedView, escapedSchema),
+		}
+	default:
+		if safeSchema != "" {
+			return []string{
+				fmt.Sprintf("SELECT view_definition AS ddl FROM information_schema.views WHERE table_name = '%s' AND table_schema = '%s' LIMIT 1", escapedView, escapedSchema),
+			}
+		}
+		if strings.TrimSpace(dbName) != "" {
+			return []string{
+				fmt.Sprintf("SELECT view_definition AS ddl FROM information_schema.views WHERE table_name = '%s' AND table_schema = '%s' LIMIT 1", escapedView, escapedDB),
+			}
+		}
+		return []string{
+			fmt.Sprintf("SELECT view_definition AS ddl FROM information_schema.views WHERE table_name = '%s' LIMIT 1", escapedView),
+		}
+	}
+}
+
+func extractViewCreateSQL(row map[string]interface{}) string {
+	if row == nil {
+		return ""
+	}
+	ddl := exportRowValueCI(row, "create view", "create_statement", "create_sql", "ddl", "sql", "view_definition", "definition")
+	if ddl != "" {
+		return ddl
+	}
+	for _, value := range row {
+		if value == nil {
+			continue
+		}
+		text := strings.TrimSpace(fmt.Sprintf("%v", value))
+		if text == "" || text == "<nil>" {
+			continue
+		}
+		lower := strings.ToLower(text)
+		if strings.HasPrefix(lower, "create ") || strings.HasPrefix(lower, "select ") || strings.HasPrefix(lower, "with ") {
+			return text
+		}
+	}
+	return ""
+}
+
+func exportRowValueCI(row map[string]interface{}, candidates ...string) string {
+	if len(row) == 0 || len(candidates) == 0 {
+		return ""
+	}
+	for _, candidate := range candidates {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate == "" {
+			continue
+		}
+		for key, value := range row {
+			normalizedKey := strings.ToLower(strings.TrimSpace(key))
+			if normalizedKey != candidate {
+				continue
+			}
+			if value == nil {
+				return ""
+			}
+			text := strings.TrimSpace(fmt.Sprintf("%v", value))
+			if text == "<nil>" {
+				return ""
+			}
+			return text
+		}
+	}
+	return ""
+}
+
+func exportInferObjectName(row map[string]interface{}) string {
+	if len(row) == 0 {
+		return ""
+	}
+	for key, value := range row {
+		normalizedKey := strings.ToLower(strings.TrimSpace(key))
+		if normalizedKey == "" {
+			continue
+		}
+		if strings.Contains(normalizedKey, "type") {
+			continue
+		}
+		if strings.Contains(normalizedKey, "table") || strings.Contains(normalizedKey, "view") || strings.Contains(normalizedKey, "name") || strings.Contains(normalizedKey, "ddl") || strings.Contains(normalizedKey, "sql") {
+			if value == nil {
+				continue
+			}
+			text := strings.TrimSpace(fmt.Sprintf("%v", value))
+			if text == "" || text == "<nil>" {
+				continue
+			}
+			return text
+		}
+	}
+	for _, value := range row {
+		if value == nil {
+			continue
+		}
+		text := strings.TrimSpace(fmt.Sprintf("%v", value))
+		if text == "" || text == "<nil>" {
+			continue
+		}
+		return text
+	}
+	return ""
+}
+
+func looksLikeSelectOrWith(sql string) bool {
+	trimmed := strings.TrimSpace(strings.TrimSuffix(sql, ";"))
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "select ") || strings.HasPrefix(lower, "with ") || lower == "select" || lower == "with"
+}
+
+func escapeSQLLiteral(value string) string {
+	return strings.ReplaceAll(strings.TrimSpace(value), "'", "''")
+}
+
 func isMySQLHexLiteral(s string) bool {
 	if len(s) < 3 || !(strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) {
 		return false
@@ -798,13 +1199,63 @@ func formatSQLValue(dbType string, v interface{}) string {
 	}
 }
 
-func dumpTableSQL(w *bufio.Writer, dbInst db.Database, config connection.ConnectionConfig, dbName, tableName string, includeSchema bool, includeData bool) error {
+func dumpTableSQL(
+	w *bufio.Writer,
+	dbInst db.Database,
+	config connection.ConnectionConfig,
+	dbName,
+	tableName string,
+	includeSchema bool,
+	includeData bool,
+	viewLookup map[string]string,
+) error {
 	schemaName, pureTableName := normalizeSchemaAndTable(config, dbName, tableName)
+	objectKey := normalizeExportObjectKeyByParts(schemaName, pureTableName)
+	_, isView := viewLookup[objectKey]
+	var createSQL string
+
+	if includeSchema {
+		if isView {
+			viewDDL, ok := tryGetViewCreateStatement(dbInst, config, dbName, schemaName, pureTableName)
+			if ok {
+				createSQL = viewDDL
+			} else {
+				ddl, err := dbInst.GetCreateStatement(schemaName, pureTableName)
+				if err != nil {
+					return err
+				}
+				createSQL = ddl
+			}
+		} else {
+			ddl, err := dbInst.GetCreateStatement(schemaName, pureTableName)
+			if err != nil {
+				if viewDDL, ok := tryGetViewCreateStatement(dbInst, config, dbName, schemaName, pureTableName); ok {
+					createSQL = viewDDL
+					isView = true
+				} else {
+					return err
+				}
+			} else {
+				createSQL = ddl
+			}
+		}
+	}
+
+	if includeData && !includeSchema && !isView {
+		if _, ok := tryGetViewCreateStatement(dbInst, config, dbName, schemaName, pureTableName); ok {
+			isView = true
+		}
+	}
+
+	objectLabel := "Table"
+	if isView {
+		objectLabel = "View"
+	}
 
 	if _, err := w.WriteString("\n-- ----------------------------\n"); err != nil {
 		return err
 	}
-	if _, err := w.WriteString(fmt.Sprintf("-- Table: %s\n", qualifyTable(schemaName, pureTableName))); err != nil {
+	if _, err := w.WriteString(fmt.Sprintf("-- %s: %s\n", objectLabel, qualifyTable(schemaName, pureTableName))); err != nil {
 		return err
 	}
 	if _, err := w.WriteString("-- ----------------------------\n\n"); err != nil {
@@ -812,10 +1263,6 @@ func dumpTableSQL(w *bufio.Writer, dbInst db.Database, config connection.Connect
 	}
 
 	if includeSchema {
-		createSQL, err := dbInst.GetCreateStatement(schemaName, pureTableName)
-		if err != nil {
-			return err
-		}
 		if _, err := w.WriteString(ensureSQLTerminator(createSQL)); err != nil {
 			return err
 		}
@@ -825,6 +1272,13 @@ func dumpTableSQL(w *bufio.Writer, dbInst db.Database, config connection.Connect
 	}
 
 	if !includeData {
+		return nil
+	}
+
+	if isView {
+		if _, err := w.WriteString("-- View data export skipped (INSERT for views is not emitted).\n"); err != nil {
+			return err
+		}
 		return nil
 	}
 

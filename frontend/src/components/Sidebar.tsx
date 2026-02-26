@@ -46,6 +46,15 @@ interface TreeNode {
 }
 
 type BatchTableExportMode = 'schema' | 'backup' | 'dataOnly';
+type BatchObjectType = 'table' | 'view';
+
+interface BatchObjectItem {
+  title: string;
+  key: string;
+  objectName: string;
+  objectType: BatchObjectType;
+  dataRef: any;
+}
 
 const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> = ({ onEditConnection }) => {
   const connections = useStore(state => state.connections);
@@ -118,12 +127,17 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
 
   // Batch Operations Modal
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
-  const [batchTables, setBatchTables] = useState<any[]>([]);
+  const [batchTables, setBatchTables] = useState<BatchObjectItem[]>([]);
   const [checkedTableKeys, setCheckedTableKeys] = useState<string[]>([]);
   const [batchDbContext, setBatchDbContext] = useState<any>(null);
   const [selectedConnection, setSelectedConnection] = useState<string>('');
   const [selectedDatabase, setSelectedDatabase] = useState<string>('');
   const [availableDatabases, setAvailableDatabases] = useState<any[]>([]);
+  const groupedBatchObjects = useMemo(() => {
+      const tables = batchTables.filter(item => item.objectType === 'table');
+      const views = batchTables.filter(item => item.objectType === 'view');
+      return { tables, views };
+  }, [batchTables]);
 
   // Batch Database Operations Modal
   const [isBatchDbModalOpen, setIsBatchDbModalOpen] = useState(false);
@@ -1288,7 +1302,7 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
           if (node.type === 'database') {
               connId = node.dataRef.id;
               dbName = node.title;
-          } else if (node.type === 'table') {
+          } else if (node.type === 'table' || node.type === 'view') {
               connId = node.dataRef.id;
               dbName = node.dataRef.dbName;
           }
@@ -1356,23 +1370,42 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
           ssh: conn.config.ssh || { host: "", port: 22, user: "", password: "", keyPath: "" }
       };
 
-      const res = await DBGetTables(config as any, dbName);
-      if (res.success) {
-          const tables = (res.data as any[]).map((row: any) => {
-              const tableName = Object.values(row)[0] as string;
-              return {
-                  title: tableName,
-                  key: `${conn.id}-${dbName}-${tableName}`,
-                  tableName: tableName,
-                  dataRef: { ...conn, tableName, dbName }
-              };
-          });
+      const [res, viewResult] = await Promise.all([
+          DBGetTables(config as any, dbName),
+          loadViews(conn, dbName).catch(() => ({ views: [], supported: false })),
+      ]);
 
-          setBatchTables(tables);
-          setCheckedTableKeys([]);
-      } else {
+      if (!res.success) {
           message.error('获取表列表失败: ' + res.message);
+          return;
       }
+
+      const viewSet = new Set(viewResult.views.map(view => view.toLowerCase()));
+
+      const tableObjects: BatchObjectItem[] = (res.data as any[])
+          .map((row: any) => Object.values(row)[0] as string)
+          .filter((tableName: string) => !viewSet.has(tableName.toLowerCase()))
+          .map((tableName: string) => ({
+              title: getSidebarTableDisplayName(conn, tableName),
+              key: `${conn.id}-${dbName}-table-${tableName}`,
+              objectName: tableName,
+              objectType: 'table' as const,
+              dataRef: { ...conn, tableName, dbName, objectType: 'table' },
+          }));
+
+      const viewObjects: BatchObjectItem[] = viewResult.views.map((viewName: string) => ({
+          title: getSidebarTableDisplayName(conn, viewName),
+          key: `${conn.id}-${dbName}-view-${viewName}`,
+          objectName: viewName,
+          objectType: 'view' as const,
+          dataRef: { ...conn, tableName: viewName, dbName, objectType: 'view' },
+      }));
+
+      tableObjects.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+      viewObjects.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+
+      setBatchTables([...tableObjects, ...viewObjects]);
+      setCheckedTableKeys([]);
   };
 
   const handleConnectionChange = async (connId: string) => {
@@ -1397,31 +1430,36 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
   };
 
   const handleBatchExport = async (mode: BatchTableExportMode) => {
-      const selectedTables = batchTables.filter(t => checkedTableKeys.includes(t.key));
-      if (selectedTables.length === 0) {
-          message.warning('请至少选择一张表');
+      const selectedObjects = batchTables.filter(t => checkedTableKeys.includes(t.key));
+      if (selectedObjects.length === 0) {
+          message.warning('请至少选择一个对象');
           return;
       }
 
       setIsBatchModalOpen(false);
 
       const { conn, dbName } = batchDbContext;
-      const tableNames = selectedTables.map(t => t.tableName);
+      const objectNames = selectedObjects.map(t => t.objectName);
+      const selectedViewCount = selectedObjects.filter(item => item.objectType === 'view').length;
 
       const loadingText = mode === 'backup'
-          ? `正在备份选中表 (${tableNames.length})...`
+          ? `正在备份选中对象 (${objectNames.length})...`
           : mode === 'dataOnly'
-              ? `正在导出选中表数据 (INSERT) (${tableNames.length})...`
-              : `正在导出选中表结构 (${tableNames.length})...`;
+              ? `正在导出选中对象数据 (INSERT) (${objectNames.length})...`
+              : `正在导出选中对象结构 (${objectNames.length})...`;
       const hide = message.loading(loadingText, 0);
       try {
           const app = (window as any).go.app.App;
           const res = mode === 'dataOnly'
-              ? await app.ExportTablesDataSQL(normalizeConnConfig(conn.config), dbName, tableNames)
-              : await app.ExportTablesSQL(normalizeConnConfig(conn.config), dbName, tableNames, mode === 'backup');
+              ? await app.ExportTablesDataSQL(normalizeConnConfig(conn.config), dbName, objectNames)
+              : await app.ExportTablesSQL(normalizeConnConfig(conn.config), dbName, objectNames, mode === 'backup');
           hide();
           if (res.success) {
-              message.success('导出成功');
+              if (mode !== 'schema' && selectedViewCount > 0) {
+                  message.success(`导出成功（已自动跳过 ${selectedViewCount} 个视图的数据导出）`);
+              } else {
+                  message.success('导出成功');
+              }
           } else if (res.message !== 'Cancelled') {
               message.error('导出失败: ' + res.message);
           }
@@ -2859,7 +2897,7 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
                                 反选
                             </Button>
                             <span style={{ color: '#999' }}>
-                                已选择 {checkedTableKeys.length} / {batchTables.length} 张表
+                                已选择 {checkedTableKeys.length} / {batchTables.length} 个对象
                             </span>
                         </Space>
                     </div>
@@ -2869,14 +2907,38 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
                             onChange={(values) => setCheckedTableKeys(values as string[])}
                             style={{ width: '100%' }}
                         >
-                            <Space direction="vertical" style={{ width: '100%' }}>
-                                {batchTables.map(table => (
-                                    <Checkbox key={table.key} value={table.key}>
-                                        <TableOutlined style={{ marginRight: 8 }} />
-                                        {table.title}
-                                    </Checkbox>
-                                ))}
-                            </Space>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                {groupedBatchObjects.tables.length > 0 && (
+                                    <div>
+                                        <div style={{ marginBottom: 6, color: darkMode ? '#bfbfbf' : '#595959', fontSize: 12 }}>
+                                            表 ({groupedBatchObjects.tables.length})
+                                        </div>
+                                        <Space direction="vertical" style={{ width: '100%' }}>
+                                            {groupedBatchObjects.tables.map(table => (
+                                                <Checkbox key={table.key} value={table.key}>
+                                                    <TableOutlined style={{ marginRight: 8 }} />
+                                                    {table.title}
+                                                </Checkbox>
+                                            ))}
+                                        </Space>
+                                    </div>
+                                )}
+                                {groupedBatchObjects.views.length > 0 && (
+                                    <div>
+                                        <div style={{ marginBottom: 6, color: darkMode ? '#bfbfbf' : '#595959', fontSize: 12 }}>
+                                            视图 ({groupedBatchObjects.views.length})
+                                        </div>
+                                        <Space direction="vertical" style={{ width: '100%' }}>
+                                            {groupedBatchObjects.views.map(view => (
+                                                <Checkbox key={view.key} value={view.key}>
+                                                    <EyeOutlined style={{ marginRight: 8 }} />
+                                                    {view.title}
+                                                </Checkbox>
+                                            ))}
+                                        </Space>
+                                    </div>
+                                )}
+                            </div>
                         </Checkbox.Group>
                     </div>
                 </>
