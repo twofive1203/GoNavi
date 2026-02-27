@@ -38,7 +38,7 @@ export function DataSyncAnalyze(arg1:sync.SyncConfig):Promise<connection.QueryRe
 
 export function DataSyncPreview(arg1:sync.SyncConfig,arg2:string,arg3:number):Promise<connection.QueryResult>;
 
-export function DownloadDriverPackage(arg1:string,arg2:string,arg3:string):Promise<connection.QueryResult>;
+export function DownloadDriverPackage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<connection.QueryResult>;
 
 export function DownloadUpdate():Promise<connection.QueryResult>;
 
@@ -65,6 +65,10 @@ export function ExportTablesSQL(arg1:connection.ConnectionConfig,arg2:string,arg
 export function GetAppInfo():Promise<connection.QueryResult>;
 
 export function GetDriverStatusList(arg1:string,arg2:string):Promise<connection.QueryResult>;
+
+export function GetDriverVersionList(arg1:string,arg2:string):Promise<connection.QueryResult>;
+
+export function GetDriverVersionPackageSize(arg1:string,arg2:string):Promise<connection.QueryResult>;
 
 export function ImportConfigFile():Promise<connection.QueryResult>;
 

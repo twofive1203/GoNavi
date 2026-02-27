@@ -70,8 +70,8 @@ export function DataSyncPreview(arg1, arg2, arg3) {
   return window['go']['app']['App']['DataSyncPreview'](arg1, arg2, arg3);
 }
 
-export function DownloadDriverPackage(arg1, arg2, arg3) {
-  return window['go']['app']['App']['DownloadDriverPackage'](arg1, arg2, arg3);
+export function DownloadDriverPackage(arg1, arg2, arg3, arg4) {
+  return window['go']['app']['App']['DownloadDriverPackage'](arg1, arg2, arg3, arg4);
 }
 
 export function DownloadUpdate() {
@@ -124,6 +124,14 @@ export function GetAppInfo() {
 
 export function GetDriverStatusList(arg1, arg2) {
   return window['go']['app']['App']['GetDriverStatusList'](arg1, arg2);
+}
+
+export function GetDriverVersionList(arg1, arg2) {
+  return window['go']['app']['App']['GetDriverVersionList'](arg1, arg2);
+}
+
+export function GetDriverVersionPackageSize(arg1, arg2) {
+  return window['go']['app']['App']['GetDriverVersionPackageSize'](arg1, arg2);
 }
 
 export function ImportConfigFile() {

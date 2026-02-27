@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	stdRuntime "runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"GoNavi-Wails/internal/db"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/mod/semver"
 )
 
 type driverDefinition struct {
@@ -37,6 +39,7 @@ type driverDefinition struct {
 
 type installedDriverPackage struct {
 	DriverType     string `json:"driverType"`
+	Version        string `json:"version,omitempty"`
 	FilePath       string `json:"filePath"`
 	FileName       string `json:"fileName"`
 	ExecutablePath string `json:"executablePath,omitempty"`
@@ -51,6 +54,7 @@ type driverStatusItem struct {
 	Engine             string `json:"engine,omitempty"`
 	BuiltIn            bool   `json:"builtIn"`
 	PinnedVersion      string `json:"pinnedVersion,omitempty"`
+	InstalledVersion   string `json:"installedVersion,omitempty"`
 	PackageSizeText    string `json:"packageSizeText,omitempty"`
 	RuntimeAvailable   bool   `json:"runtimeAvailable"`
 	PackageInstalled   bool   `json:"packageInstalled"`
@@ -91,6 +95,21 @@ type driverManifestFile struct {
 }
 
 type driverManifestItem struct {
+	Version         string                      `json:"version"`
+	DownloadURL     string                      `json:"downloadUrl"`
+	DownloadURL2    string                      `json:"download_url"`
+	SHA256          string                      `json:"sha256"`
+	ChecksumPolicy  string                      `json:"checksumPolicy"`
+	ChecksumPolicy2 string                      `json:"checksum_policy"`
+	Engine          string                      `json:"engine"`
+	Versions        []driverManifestVersionItem `json:"versions"`
+	VersionList     []driverManifestVersionItem `json:"versionList"`
+	VersionList2    []driverManifestVersionItem `json:"version_list"`
+	VersionOptions  []driverManifestVersionItem `json:"versionOptions"`
+	VersionOptions2 []driverManifestVersionItem `json:"version_options"`
+}
+
+type driverManifestVersionItem struct {
 	Version         string `json:"version"`
 	DownloadURL     string `json:"downloadUrl"`
 	DownloadURL2    string `json:"download_url"`
@@ -103,13 +122,47 @@ type driverManifestItem struct {
 type driverManifestCacheEntry struct {
 	LoadedAt time.Time
 	Packages map[string]pinnedDriverPackage
+	Versions map[string][]pinnedDriverPackage
 	Err      string
+}
+
+type driverVersionOptionItem struct {
+	Version          string `json:"version"`
+	DownloadURL      string `json:"downloadUrl"`
+	SHA256           string `json:"sha256,omitempty"`
+	PackageSizeBytes int64  `json:"packageSizeBytes,omitempty"`
+	PackageSizeText  string `json:"packageSizeText,omitempty"`
+	Recommended      bool   `json:"recommended,omitempty"`
+	Source           string `json:"source,omitempty"`
+	Year             string `json:"year,omitempty"`
+	DisplayLabel     string `json:"displayLabel,omitempty"`
 }
 
 type driverReleaseAssetSizeCacheEntry struct {
 	LoadedAt  time.Time
 	SizeByKey map[string]int64
 	Err       string
+}
+
+type goModuleLatestVersionCacheEntry struct {
+	LoadedAt time.Time
+	Version  string
+	Err      string
+}
+
+type goModuleLatestVersionResponse struct {
+	Version string `json:"Version"`
+}
+
+type goModuleVersionListCacheEntry struct {
+	LoadedAt time.Time
+	Versions []goModuleVersionMeta
+	Err      string
+}
+
+type goModuleVersionMeta struct {
+	Version string
+	Year    string
 }
 
 type driverBundleAssetIndex struct {
@@ -125,6 +178,14 @@ const (
 	driverReleaseAssetSizeCacheTTL      = 30 * time.Minute
 	driverReleaseAssetSizeErrorCacheTTL = 30 * time.Second
 	driverReleaseAssetSizeProbeTimeout  = 4 * time.Second
+	driverReleaseListProbeTimeout       = 6 * time.Second
+	driverModuleLatestCacheTTL          = 6 * time.Hour
+	driverModuleLatestErrorCacheTTL     = 2 * time.Minute
+	driverModuleLatestProbeTimeout      = 4 * time.Second
+	driverModuleVersionInspectLimit     = 30
+	driverModuleVersionListMaxSize      = 4 << 20
+	driverRecentVersionLimit            = 5
+	driverVersionWarmupMinInterval      = 30 * time.Second
 	driverBundleIndexMaxSize            = 1 << 20
 	driverManifestMaxSize               = 2 << 20
 	driverChecksumPolicyStrict          = "strict"
@@ -137,34 +198,97 @@ const (
 const builtinDriverManifestJSON = `{
   "engine": "go",
   "drivers": {
-    "mysql":     { "engine": "go", "version": "go-embedded", "checksumPolicy": "off" },
-    "mariadb":   { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/mariadb" },
-    "diros":     { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/diros" },
-    "sphinx":    { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/sphinx" },
-    "sqlserver": { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/sqlserver" },
-    "sqlite":    { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/sqlite" },
-    "duckdb":    { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/duckdb" },
-    "dameng":    { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/dameng" },
-    "kingbase":  { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/kingbase" },
-    "highgo":    { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/highgo" },
-    "vastbase":  { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/vastbase" },
-    "mongodb":   { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/mongodb" },
-    "tdengine":  { "engine": "go", "version": "go-embedded", "checksumPolicy": "off", "downloadUrl": "builtin://activate/tdengine" }
+    "mysql":     { "engine": "go", "version": "1.9.3", "checksumPolicy": "off" },
+    "mariadb":   { "engine": "go", "version": "1.9.3", "checksumPolicy": "off", "downloadUrl": "builtin://activate/mariadb" },
+    "diros":     { "engine": "go", "version": "1.9.3", "checksumPolicy": "off", "downloadUrl": "builtin://activate/diros" },
+    "sphinx":    { "engine": "go", "version": "1.9.3", "checksumPolicy": "off", "downloadUrl": "builtin://activate/sphinx" },
+    "sqlserver": { "engine": "go", "version": "1.9.6", "checksumPolicy": "off", "downloadUrl": "builtin://activate/sqlserver" },
+    "sqlite":    { "engine": "go", "version": "1.44.3", "checksumPolicy": "off", "downloadUrl": "builtin://activate/sqlite" },
+    "duckdb":    { "engine": "go", "version": "2.5.5", "checksumPolicy": "off", "downloadUrl": "builtin://activate/duckdb" },
+    "dameng":    { "engine": "go", "version": "1.8.22", "checksumPolicy": "off", "downloadUrl": "builtin://activate/dameng" },
+    "kingbase":  { "engine": "go", "version": "0.0.0-20201021123113-29bd62a876c3", "checksumPolicy": "off", "downloadUrl": "builtin://activate/kingbase" },
+    "highgo":    { "engine": "go", "version": "0.0.0-local", "checksumPolicy": "off", "downloadUrl": "builtin://activate/highgo" },
+    "vastbase":  { "engine": "go", "version": "1.11.1", "checksumPolicy": "off", "downloadUrl": "builtin://activate/vastbase" },
+    "mongodb":   { "engine": "go", "version": "2.5.0", "checksumPolicy": "off", "downloadUrl": "builtin://activate/mongodb" },
+    "tdengine":  { "engine": "go", "version": "3.7.8", "checksumPolicy": "off", "downloadUrl": "builtin://activate/tdengine" }
   }
 }`
 
 var (
-	driverManifestCacheMu sync.RWMutex
-	driverManifestCache   = make(map[string]driverManifestCacheEntry)
-	driverReleaseSizeMu   sync.RWMutex
-	driverReleaseSizeMap  = make(map[string]driverReleaseAssetSizeCacheEntry)
+	driverManifestCacheMu  sync.RWMutex
+	driverManifestCache    = make(map[string]driverManifestCacheEntry)
+	driverReleaseSizeMu    sync.RWMutex
+	driverReleaseSizeMap   = make(map[string]driverReleaseAssetSizeCacheEntry)
+	driverReleaseListMu    sync.RWMutex
+	driverReleaseList      = driverManifestReleaseListCache{}
+	driverModuleLatestMu   sync.RWMutex
+	driverModuleLatestMap  = make(map[string]goModuleLatestVersionCacheEntry)
+	driverModuleVersionMu  sync.RWMutex
+	driverModuleVersionMap = make(map[string]goModuleVersionListCacheEntry)
+	driverVersionWarmupMu  sync.Mutex
+	driverVersionWarmup    = driverVersionWarmupState{}
 )
+
+type driverVersionWarmupState struct {
+	Running     bool
+	LastStarted time.Time
+}
+
+type driverManifestReleaseListCache struct {
+	LoadedAt time.Time
+	Releases []githubRelease
+	Err      string
+}
 
 var pinnedDriverPackageMap = map[string]pinnedDriverPackage{
 	"postgres": {
 		Version: "go-embedded",
 		Policy:  driverChecksumPolicyOff,
 		Engine:  driverEngineGo,
+	},
+}
+
+var latestDriverVersionMap = map[string]string{
+	"mysql":     "1.9.3",
+	"mariadb":   "1.9.3",
+	"diros":     "1.9.3",
+	"sphinx":    "1.9.3",
+	"sqlserver": "1.9.6",
+	"sqlite":    "1.46.1",
+	"duckdb":    "2.5.5",
+	"dameng":    "1.8.22",
+	"kingbase":  "0.0.0-20201021123113-29bd62a876c3",
+	"highgo":    "0.0.0-local",
+	"vastbase":  "1.11.2",
+	"mongodb":   "2.5.0",
+	"tdengine":  "3.7.8",
+	"oracle":    "2.9.0",
+	"postgres":  "1.11.2",
+	"redis":     "9.17.3",
+}
+
+var driverGoModulePathMap = map[string]string{
+	"mariadb":   "github.com/go-sql-driver/mysql",
+	"diros":     "github.com/go-sql-driver/mysql",
+	"sphinx":    "github.com/go-sql-driver/mysql",
+	"sqlserver": "github.com/microsoft/go-mssqldb",
+	"sqlite":    "modernc.org/sqlite",
+	"duckdb":    "github.com/duckdb/duckdb-go/v2",
+	"dameng":    "gitee.com/chunanyong/dm",
+	"kingbase":  "gitea.com/kingbase/gokb",
+	"highgo":    "github.com/highgo/pq-sm3",
+	"vastbase":  "github.com/lib/pq",
+	"mongodb":   "go.mongodb.org/mongo-driver/v2",
+	"tdengine":  "github.com/taosdata/driver-go/v3",
+}
+
+var fallbackRecentDriverVersionsMap = map[string][]goModuleVersionMeta{
+	"mongodb": {
+		{Version: "2.5.0"},
+		{Version: "2.4.0"},
+		{Version: "2.3.1"},
+		{Version: "2.3.0"},
+		{Version: "2.2.3"},
 	},
 }
 
@@ -304,6 +428,91 @@ func (a *App) ResolveDriverPackageDownloadURL(driverType string, repositoryURL s
 	return connection.QueryResult{Success: false, Message: "当前仅支持纯 Go 可选驱动的安装启用"}
 }
 
+func (a *App) GetDriverVersionList(driverType string, repositoryURL string) connection.QueryResult {
+	effectivePackages, manifestErr := resolveEffectiveDriverPackages(repositoryURL)
+	definition, ok := resolveDriverDefinitionWithPackages(driverType, effectivePackages)
+	if !ok {
+		return connection.QueryResult{Success: false, Message: "不支持的驱动类型"}
+	}
+	if definition.BuiltIn {
+		return connection.QueryResult{Success: false, Message: "内置驱动无需选择版本"}
+	}
+	if err := ensureOptionalDriverBuildAvailable(definition); err != nil {
+		return connection.QueryResult{Success: false, Message: err.Error()}
+	}
+	options, err := resolveDriverVersionOptions(definition, repositoryURL)
+	if err != nil {
+		return connection.QueryResult{Success: false, Message: err.Error()}
+	}
+	return connection.QueryResult{
+		Success: true,
+		Data: map[string]interface{}{
+			"driverType":    definition.Type,
+			"driverName":    definition.Name,
+			"pinnedVersion": definition.PinnedVersion,
+			"manifestError": errorMessage(manifestErr),
+			"versions":      options,
+		},
+	}
+}
+
+func (a *App) GetDriverVersionPackageSize(driverType string, version string) connection.QueryResult {
+	definition, ok := resolveDriverDefinition(driverType)
+	if !ok {
+		return connection.QueryResult{Success: false, Message: "不支持的驱动类型"}
+	}
+	if definition.BuiltIn {
+		return connection.QueryResult{Success: false, Message: "内置驱动无需安装包"}
+	}
+
+	normalizedType := normalizeDriverType(definition.Type)
+	if normalizedType == "" || !db.IsOptionalGoDriver(normalizedType) {
+		return connection.QueryResult{Success: false, Message: "当前驱动不支持安装包查询"}
+	}
+
+	normalizedVersion := normalizeVersion(strings.TrimSpace(version))
+	if normalizedVersion == "" {
+		return connection.QueryResult{Success: false, Message: "版本号为空"}
+	}
+	assetName := optionalDriverReleaseAssetName(normalizedType)
+	if strings.TrimSpace(assetName) == "" {
+		return connection.QueryResult{Success: false, Message: "驱动资产名称为空"}
+	}
+
+	tag := "v" + normalizedVersion
+	sizeBytes := int64(0)
+	sizeSource := ""
+	if sizeByAsset, err := loadReleaseAssetSizesCached("tag:"+tag, func() (*githubRelease, error) {
+		return fetchReleaseByTag(tag)
+	}); err == nil {
+		sizeBytes = sizeByAsset[assetName]
+		if sizeBytes > 0 {
+			sizeSource = "tag"
+		}
+	}
+	if sizeBytes <= 0 {
+		if sizeByAsset, err := loadReleaseAssetSizesCached("latest", fetchLatestReleaseForDriverAssets); err == nil {
+			sizeBytes = sizeByAsset[assetName]
+			if sizeBytes > 0 {
+				sizeSource = "latest"
+			}
+		}
+	}
+	data := map[string]interface{}{
+		"driverType":       normalizedType,
+		"version":          normalizedVersion,
+		"packageSizeBytes": sizeBytes,
+		"packageSizeText":  "",
+		"releaseAssetName": assetName,
+		"releaseAssetTag":  tag,
+		"sizeSource":       sizeSource,
+	}
+	if sizeBytes > 0 {
+		data["packageSizeText"] = formatSizeMB(sizeBytes)
+	}
+	return connection.QueryResult{Success: true, Data: data}
+}
+
 func (a *App) GetDriverStatusList(downloadDir string, manifestURL string) connection.QueryResult {
 	resolvedDir, err := resolveDriverDownloadDirectory(downloadDir)
 	if err != nil {
@@ -313,6 +522,7 @@ func (a *App) GetDriverStatusList(downloadDir string, manifestURL string) connec
 
 	effectivePackages, manifestErr := resolveEffectiveDriverPackages(manifestURL)
 	definitions := allDriverDefinitionsWithPackages(effectivePackages)
+	triggerDriverVersionMetadataWarmup(definitions)
 	packageSizeBytesMap := preloadOptionalDriverPackageSizes(definitions)
 	items := make([]driverStatusItem, 0, len(definitions))
 	for _, definition := range definitions {
@@ -330,6 +540,7 @@ func (a *App) GetDriverStatusList(downloadDir string, manifestURL string) connec
 			Engine:             engine,
 			BuiltIn:            definition.BuiltIn,
 			PinnedVersion:      definition.PinnedVersion,
+			InstalledVersion:   strings.TrimSpace(pkg.Version),
 			PackageSizeText:    resolveDriverPackageSizeText(definition, pkg, packageMetaExists, packageSizeBytesMap),
 			RuntimeAvailable:   runtimeAvailable,
 			PackageInstalled:   packageInstalled,
@@ -352,7 +563,11 @@ func (a *App) GetDriverStatusList(downloadDir string, manifestURL string) connec
 		case packageInstalled && strings.TrimSpace(runtimeReason) != "":
 			item.Message = runtimeReason
 		case packageInstalled:
-			item.Message = "驱动已安装，待生效"
+			if item.InstalledVersion != "" {
+				item.Message = fmt.Sprintf("驱动已安装（版本：%s），待生效", item.InstalledVersion)
+			} else {
+				item.Message = "驱动已安装，待生效"
+			}
 		case strings.TrimSpace(runtimeReason) != "":
 			item.Message = runtimeReason
 		default:
@@ -409,6 +624,7 @@ func (a *App) InstallLocalDriverPackage(driverType string, filePath string, down
 	a.emitDriverDownloadProgress(definition.Type, "start", 0, 0, "开始安装")
 	meta := installedDriverPackage{
 		DriverType:   definition.Type,
+		Version:      resolveDriverInstallVersion(definition.PinnedVersion, "local://activate", definition),
 		FilePath:     "",
 		FileName:     "embedded-go-driver",
 		DownloadURL:  "local://activate",
@@ -428,7 +644,7 @@ func (a *App) InstallLocalDriverPackage(driverType string, filePath string, down
 	}}
 }
 
-func (a *App) DownloadDriverPackage(driverType string, downloadURL string, downloadDir string) connection.QueryResult {
+func (a *App) DownloadDriverPackage(driverType string, version string, downloadURL string, downloadDir string) connection.QueryResult {
 	definition, ok := resolveDriverDefinition(driverType)
 	if !ok {
 		return connection.QueryResult{Success: false, Message: "不支持的驱动类型"}
@@ -451,6 +667,7 @@ func (a *App) DownloadDriverPackage(driverType string, downloadURL string, downl
 	if urlText == "" {
 		urlText = fmt.Sprintf("builtin://activate/%s", definition.Type)
 	}
+	selectedVersion := resolveDriverInstallVersion(version, urlText, definition)
 
 	resolvedDir, err := resolveDriverDownloadDirectory(downloadDir)
 	if err != nil {
@@ -464,7 +681,7 @@ func (a *App) DownloadDriverPackage(driverType string, downloadURL string, downl
 			displayName = strings.TrimSpace(definition.Type)
 		}
 		a.emitDriverDownloadProgress(definition.Type, "start", 0, 100, fmt.Sprintf("开始安装 %s 驱动代理", displayName))
-		meta, installErr := installOptionalDriverAgentPackage(a, definition, resolvedDir, urlText)
+		meta, installErr := installOptionalDriverAgentPackage(a, definition, selectedVersion, resolvedDir, urlText)
 		if installErr != nil {
 			a.emitDriverDownloadProgress(definition.Type, "error", 0, 0, installErr.Error())
 			return connection.QueryResult{Success: false, Message: installErr.Error()}
@@ -485,6 +702,7 @@ func (a *App) DownloadDriverPackage(driverType string, downloadURL string, downl
 	a.emitDriverDownloadProgress(definition.Type, "start", 0, 0, "开始安装")
 	meta := installedDriverPackage{
 		DriverType:   definition.Type,
+		Version:      selectedVersion,
 		FilePath:     "",
 		FileName:     "embedded-go-driver",
 		DownloadURL:  urlText,
@@ -755,6 +973,31 @@ func copyPinnedPackageMap(source map[string]pinnedDriverPackage) map[string]pinn
 	return result
 }
 
+func copyVersionPackageMap(source map[string][]pinnedDriverPackage) map[string][]pinnedDriverPackage {
+	if len(source) == 0 {
+		return map[string][]pinnedDriverPackage{}
+	}
+	result := make(map[string][]pinnedDriverPackage, len(source))
+	for key, values := range source {
+		if len(values) == 0 {
+			result[key] = []pinnedDriverPackage{}
+			continue
+		}
+		next := make([]pinnedDriverPackage, 0, len(values))
+		for _, value := range values {
+			next = append(next, pinnedDriverPackage{
+				Version:     strings.TrimSpace(value.Version),
+				DownloadURL: strings.TrimSpace(value.DownloadURL),
+				SHA256:      strings.TrimSpace(value.SHA256),
+				Policy:      normalizeDriverChecksumPolicy(value.Policy),
+				Engine:      normalizeDriverEngine(value.Engine),
+			})
+		}
+		result[key] = next
+	}
+	return result
+}
+
 func resolveEffectiveDriverPackages(manifestURL string) (map[string]pinnedDriverPackage, error) {
 	effective := copyPinnedPackageMap(pinnedDriverPackageMap)
 	manifestPackages, err := resolveManifestDriverPackages(manifestURL)
@@ -782,6 +1025,604 @@ func resolveEffectiveDriverPackages(manifestURL string) (map[string]pinnedDriver
 		effective[normalizedType] = base
 	}
 	return effective, nil
+}
+
+func resolveDriverVersionOptions(definition driverDefinition, repositoryURL string) ([]driverVersionOptionItem, error) {
+	driverType := normalizeDriverType(definition.Type)
+	if driverType == "" {
+		return nil, fmt.Errorf("驱动类型为空")
+	}
+
+	optionMap := make(map[string]driverVersionOptionItem)
+	optionKeys := make([]string, 0, 16)
+	appendOption := func(version, downloadURL, sha256, source, year string) {
+		versionText := strings.TrimSpace(version)
+		urlText := strings.TrimSpace(downloadURL)
+		if urlText == "" {
+			urlText = strings.TrimSpace(definition.DefaultDownloadURL)
+		}
+		if urlText == "" && effectiveDriverEngine(definition) == driverEngineGo {
+			urlText = fmt.Sprintf("builtin://activate/%s", driverType)
+		}
+		if versionText == "" {
+			versionText = resolveDriverInstallVersion("", urlText, definition)
+		}
+		if versionText == "" && urlText == "" {
+			return
+		}
+		versionKey := normalizeVersion(versionText)
+		key := ""
+		if versionKey != "" {
+			key = "v:" + strings.ToLower(versionKey)
+		} else {
+			key = "u:" + urlText
+		}
+		if existing, ok := optionMap[key]; ok {
+			if existing.Year == "" && strings.TrimSpace(year) != "" {
+				existing.Year = strings.TrimSpace(year)
+				optionMap[key] = existing
+			}
+			return
+		}
+		optionMap[key] = driverVersionOptionItem{
+			Version:     versionText,
+			DownloadURL: urlText,
+			SHA256:      strings.TrimSpace(sha256),
+			Source:      strings.TrimSpace(source),
+			Year:        strings.TrimSpace(year),
+		}
+		optionKeys = append(optionKeys, key)
+	}
+
+	manifestVersions, _ := resolveManifestDriverVersionPackages(repositoryURL)
+	if values := manifestVersions[driverType]; len(values) > 0 {
+		expectedEngine := effectiveDriverEngine(definition)
+		for _, value := range values {
+			engine := normalizeDriverEngine(value.Engine)
+			if engine != "" && expectedEngine != "" && engine != expectedEngine {
+				continue
+			}
+			appendOption(value.Version, value.DownloadURL, value.SHA256, "manifest", "")
+		}
+	}
+
+	appendOption(definition.PinnedVersion, definition.DefaultDownloadURL, definition.DownloadSHA256, "pinned", "")
+	for _, recent := range resolveRecentDriverVersionOptions(definition, driverRecentVersionLimit) {
+		if sameDriverVersion(recent.Version, definition.PinnedVersion) {
+			continue
+		}
+		appendOption(recent.Version, recent.DownloadURL, recent.SHA256, recent.Source, recent.Year)
+	}
+
+	if len(optionKeys) == 0 {
+		return nil, fmt.Errorf("未找到可用驱动版本")
+	}
+
+	recommendedVersion := strings.TrimSpace(definition.PinnedVersion)
+	recommendedIndex := -1
+	if recommendedVersion != "" {
+		for index, key := range optionKeys {
+			option := optionMap[key]
+			if strings.EqualFold(strings.TrimSpace(option.Version), recommendedVersion) {
+				recommendedIndex = index
+				break
+			}
+		}
+	}
+	if recommendedIndex == -1 {
+		recommendedIndex = 0
+	}
+
+	result := make([]driverVersionOptionItem, 0, len(optionKeys))
+	for index, key := range optionKeys {
+		option := optionMap[key]
+		option.Recommended = index == recommendedIndex
+		sizeBytes := resolveDriverVersionPackageSizeBytes(definition, option)
+		if sizeBytes > 0 {
+			option.PackageSizeBytes = sizeBytes
+			option.PackageSizeText = formatSizeMB(sizeBytes)
+		}
+		option.DisplayLabel = buildDriverVersionDisplayLabel(option)
+		result = append(result, option)
+	}
+	return result, nil
+}
+
+func buildDriverVersionDisplayLabel(option driverVersionOptionItem) string {
+	label := strings.TrimSpace(option.Version)
+	if label == "" {
+		label = "未标注版本"
+	}
+	if strings.EqualFold(strings.TrimSpace(option.Source), "latest") {
+		label += "（最新）"
+	}
+	if option.Recommended {
+		label += "（推荐）"
+	}
+	return label
+}
+
+func resolveRecentDriverVersionOptions(definition driverDefinition, limit int) []driverVersionOptionItem {
+	metas := resolveRecentDriverVersionMetas(definition.Type, limit)
+	if len(metas) == 0 {
+		return nil
+	}
+	result := make([]driverVersionOptionItem, 0, len(metas))
+	for index, meta := range metas {
+		source := "history"
+		if index == 0 {
+			source = "latest"
+		}
+		versionText, urlText, ok := resolveVersionedDriverOption(definition, meta.Version, source)
+		if !ok {
+			continue
+		}
+		result = append(result, driverVersionOptionItem{
+			Version:     versionText,
+			DownloadURL: urlText,
+			Source:      source,
+			Year:        strings.TrimSpace(meta.Year),
+		})
+	}
+	return result
+}
+
+func resolveVersionedDriverOption(definition driverDefinition, version string, source string) (string, string, bool) {
+	driverType := normalizeDriverType(definition.Type)
+	if driverType == "" {
+		return "", "", false
+	}
+	versionText := normalizeVersion(strings.TrimSpace(version))
+	if versionText == "" {
+		return "", "", false
+	}
+
+	urlText := strings.TrimSpace(definition.DefaultDownloadURL)
+	if urlText == "" && effectiveDriverEngine(definition) == driverEngineGo {
+		urlText = fmt.Sprintf("builtin://activate/%s", driverType)
+	}
+	if urlText == "" {
+		return "", "", false
+	}
+
+	parsed, err := url.Parse(urlText)
+	if err != nil || parsed == nil {
+		return versionText, urlText, true
+	}
+	query := parsed.Query()
+	channel := strings.TrimSpace(source)
+	if channel == "" {
+		channel = "history"
+	}
+	query.Set("channel", channel)
+	query.Set("version", versionText)
+	parsed.RawQuery = query.Encode()
+	return versionText, parsed.String(), true
+}
+
+func sameDriverVersion(left, right string) bool {
+	a := normalizeVersion(strings.TrimSpace(left))
+	b := normalizeVersion(strings.TrimSpace(right))
+	return a != "" && a == b
+}
+
+func resolveDriverVersionPackageSizeBytes(definition driverDefinition, option driverVersionOptionItem) int64 {
+	driverType := normalizeDriverType(definition.Type)
+	if driverType == "" || definition.BuiltIn {
+		return 0
+	}
+	if !db.IsOptionalGoDriver(driverType) {
+		return 0
+	}
+
+	version := normalizeVersion(strings.TrimSpace(option.Version))
+	if version == "" {
+		return 0
+	}
+	assetName := optionalDriverReleaseAssetName(driverType)
+	if strings.TrimSpace(assetName) == "" {
+		return 0
+	}
+
+	tag := "v" + version
+	if sizeByAsset, ok := readReleaseAssetSizesFromCache("tag:" + tag); ok {
+		return sizeByAsset[assetName]
+	}
+
+	// 下拉版本列表要求快速返回：仅复用已有缓存，不在这里触发网络请求。
+	if strings.EqualFold(strings.TrimSpace(option.Source), "latest") {
+		if sizeByAsset, ok := readReleaseAssetSizesFromCache("latest"); ok {
+			return sizeByAsset[assetName]
+		}
+	}
+	return 0
+}
+
+func resolveRecentDriverVersionMetas(driverType string, limit int) []goModuleVersionMeta {
+	if limit <= 0 {
+		limit = driverRecentVersionLimit
+	}
+	normalized := normalizeDriverType(driverType)
+	if normalized == "" {
+		return nil
+	}
+	if modulePath := strings.TrimSpace(driverGoModulePathMap[normalized]); modulePath != "" {
+		if metas := fetchGoModuleVersionMetasCached(modulePath); len(metas) > 0 {
+			if len(metas) > limit {
+				return append([]goModuleVersionMeta(nil), metas[:limit]...)
+			}
+			return append([]goModuleVersionMeta(nil), metas...)
+		}
+	}
+	if fallback := fallbackRecentDriverVersionsMap[normalized]; len(fallback) > 0 {
+		if len(fallback) > limit {
+			return append([]goModuleVersionMeta(nil), fallback[:limit]...)
+		}
+		return append([]goModuleVersionMeta(nil), fallback...)
+	}
+	if fallback := normalizeVersion(strings.TrimSpace(latestDriverVersionMap[normalized])); fallback != "" {
+		return []goModuleVersionMeta{{Version: fallback}}
+	}
+	return nil
+}
+
+func triggerDriverVersionMetadataWarmup(definitions []driverDefinition) {
+	if len(definitions) == 0 {
+		return
+	}
+
+	modulePaths := make([]string, 0, len(definitions))
+	seenModule := make(map[string]struct{}, len(definitions))
+	for _, definition := range definitions {
+		if definition.BuiltIn {
+			continue
+		}
+		driverType := normalizeDriverType(definition.Type)
+		if driverType == "" || !db.IsOptionalGoDriver(driverType) {
+			continue
+		}
+		modulePath := strings.TrimSpace(driverGoModulePathMap[driverType])
+		if modulePath == "" {
+			continue
+		}
+		if _, ok := seenModule[modulePath]; ok {
+			continue
+		}
+		seenModule[modulePath] = struct{}{}
+		modulePaths = append(modulePaths, modulePath)
+	}
+
+	if len(modulePaths) == 0 {
+		return
+	}
+	if !tryStartDriverVersionMetadataWarmup(time.Now()) {
+		return
+	}
+
+	go func(paths []string) {
+		defer finishDriverVersionMetadataWarmup()
+		// 预热 latest 资产索引，便于版本列表命中大小缓存。
+		_, _ = loadReleaseAssetSizesCached("latest", fetchLatestReleaseForDriverAssets)
+		for _, modulePath := range paths {
+			_ = fetchGoModuleVersionMetasCached(modulePath)
+		}
+	}(append([]string(nil), modulePaths...))
+}
+
+func tryStartDriverVersionMetadataWarmup(now time.Time) bool {
+	driverVersionWarmupMu.Lock()
+	defer driverVersionWarmupMu.Unlock()
+
+	if driverVersionWarmup.Running {
+		return false
+	}
+	if !driverVersionWarmup.LastStarted.IsZero() && now.Sub(driverVersionWarmup.LastStarted) < driverVersionWarmupMinInterval {
+		return false
+	}
+	driverVersionWarmup.Running = true
+	driverVersionWarmup.LastStarted = now
+	return true
+}
+
+func finishDriverVersionMetadataWarmup() {
+	driverVersionWarmupMu.Lock()
+	driverVersionWarmup.Running = false
+	driverVersionWarmupMu.Unlock()
+}
+
+func fetchGoModuleVersionMetasCached(modulePath string) []goModuleVersionMeta {
+	key := strings.TrimSpace(modulePath)
+	if key == "" {
+		return nil
+	}
+
+	driverModuleVersionMu.RLock()
+	cached, ok := driverModuleVersionMap[key]
+	driverModuleVersionMu.RUnlock()
+	if ok {
+		ttl := driverModuleLatestCacheTTL
+		if strings.TrimSpace(cached.Err) != "" {
+			ttl = driverModuleLatestErrorCacheTTL
+		}
+		if time.Since(cached.LoadedAt) < ttl {
+			if strings.TrimSpace(cached.Err) != "" {
+				return nil
+			}
+			return append([]goModuleVersionMeta(nil), cached.Versions...)
+		}
+	}
+
+	metas, err := fetchGoModuleVersionMetas(key)
+	entry := goModuleVersionListCacheEntry{
+		LoadedAt: time.Now(),
+		Versions: append([]goModuleVersionMeta(nil), metas...),
+	}
+	if err != nil {
+		entry.Err = err.Error()
+	}
+
+	driverModuleVersionMu.Lock()
+	driverModuleVersionMap[key] = entry
+	driverModuleVersionMu.Unlock()
+
+	if err != nil {
+		return nil
+	}
+	return append([]goModuleVersionMeta(nil), entry.Versions...)
+}
+
+func fetchGoModuleVersionMetas(modulePath string) ([]goModuleVersionMeta, error) {
+	trimmed := strings.TrimSpace(modulePath)
+	if trimmed == "" {
+		return nil, fmt.Errorf("模块路径为空")
+	}
+
+	endpoint := fmt.Sprintf("https://proxy.golang.org/%s/@v/list", escapeGoModulePathForProxy(trimmed))
+	client := &http.Client{
+		Timeout: driverModuleLatestProbeTimeout,
+		Transport: &http.Transport{
+			Proxy: nil,
+		},
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "GoNavi-DriverManager")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("拉取模块版本列表失败：HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, driverModuleVersionListMaxSize))
+	if err != nil {
+		return nil, fmt.Errorf("读取模块版本列表失败：%w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	versions := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		version := normalizeVersion(strings.TrimSpace(line))
+		if version == "" {
+			continue
+		}
+		normalizedSemver := "v" + version
+		if !semver.IsValid(normalizedSemver) {
+			continue
+		}
+		if semver.Prerelease(normalizedSemver) != "" {
+			continue
+		}
+		if _, ok := seen[version]; ok {
+			continue
+		}
+		seen[version] = struct{}{}
+		versions = append(versions, version)
+	}
+	if len(versions) == 0 {
+		return nil, fmt.Errorf("模块版本列表为空")
+	}
+
+	sort.SliceStable(versions, func(i, j int) bool {
+		left := "v" + versions[i]
+		right := "v" + versions[j]
+		return semver.Compare(left, right) > 0
+	})
+	if len(versions) > driverRecentVersionLimit {
+		versions = versions[:driverRecentVersionLimit]
+	}
+
+	metas := make([]goModuleVersionMeta, 0, len(versions))
+	for _, version := range versions {
+		metas = append(metas, goModuleVersionMeta{Version: version})
+	}
+	return metas, nil
+}
+
+func escapeGoModulePathForProxy(modulePath string) string {
+	parts := strings.Split(modulePath, "/")
+	for index, part := range parts {
+		parts[index] = url.PathEscape(strings.TrimSpace(part))
+	}
+	return strings.Join(parts, "/")
+}
+
+func resolveDriverVersionOptionsFromReleases(definition driverDefinition) []driverVersionOptionItem {
+	driverType := normalizeDriverType(definition.Type)
+	if driverType == "" {
+		return nil
+	}
+
+	releases, err := loadDriverReleaseListCached()
+	if err != nil {
+		return nil
+	}
+
+	assetName := optionalDriverReleaseAssetName(driverType)
+	result := make([]driverVersionOptionItem, 0, len(releases))
+	for _, release := range releases {
+		if release.Prerelease {
+			continue
+		}
+		tag := strings.TrimSpace(release.TagName)
+		if tag == "" || !releaseContainsAsset(release, assetName) {
+			continue
+		}
+		result = append(result, driverVersionOptionItem{
+			Version:     normalizeVersion(tag),
+			DownloadURL: fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", updateRepo, tag, assetName),
+			Source:      "release",
+		})
+	}
+	return result
+}
+
+func loadDriverReleaseListCached() ([]githubRelease, error) {
+	driverReleaseListMu.RLock()
+	cached := driverReleaseList
+	driverReleaseListMu.RUnlock()
+	if time.Since(cached.LoadedAt) < driverManifestCacheTTL {
+		if strings.TrimSpace(cached.Err) != "" {
+			return nil, errors.New(strings.TrimSpace(cached.Err))
+		}
+		return append([]githubRelease(nil), cached.Releases...), nil
+	}
+
+	driverReleaseListMu.Lock()
+	defer driverReleaseListMu.Unlock()
+
+	cached = driverReleaseList
+	if time.Since(cached.LoadedAt) < driverManifestCacheTTL {
+		if strings.TrimSpace(cached.Err) != "" {
+			return nil, errors.New(strings.TrimSpace(cached.Err))
+		}
+		return append([]githubRelease(nil), cached.Releases...), nil
+	}
+
+	releases, err := fetchDriverReleaseList()
+	entry := driverManifestReleaseListCache{
+		LoadedAt: time.Now(),
+		Releases: append([]githubRelease(nil), releases...),
+	}
+	if err != nil {
+		entry.Err = err.Error()
+	}
+	driverReleaseList = entry
+
+	if err != nil {
+		return nil, err
+	}
+	return releases, nil
+}
+
+func fetchDriverReleaseList() ([]githubRelease, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=30", updateRepo)
+	client := &http.Client{Timeout: driverReleaseListProbeTimeout}
+	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "GoNavi-DriverManager")
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("拉取驱动版本列表失败：HTTP %d", resp.StatusCode)
+	}
+
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 4<<20))
+	var releases []githubRelease
+	if err := decoder.Decode(&releases); err != nil {
+		return nil, fmt.Errorf("解析驱动版本列表失败：%w", err)
+	}
+	return releases, nil
+}
+
+func releaseContainsAsset(release githubRelease, assetName string) bool {
+	name := strings.TrimSpace(assetName)
+	if name == "" {
+		return false
+	}
+	for _, asset := range release.Assets {
+		if strings.EqualFold(strings.TrimSpace(asset.Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveDriverInstallVersion(version, downloadURL string, definition driverDefinition) string {
+	if selected := strings.TrimSpace(version); selected != "" {
+		return selected
+	}
+
+	if inferred := inferDriverInstallVersionByDownloadURL(downloadURL); inferred != "" {
+		return inferred
+	}
+
+	if pinned := strings.TrimSpace(definition.PinnedVersion); pinned != "" {
+		return pinned
+	}
+	if effectiveDriverEngine(definition) == driverEngineGo {
+		return "go-embedded"
+	}
+	return "unknown"
+}
+
+func inferDriverInstallVersionByDownloadURL(downloadURL string) string {
+	urlText := strings.TrimSpace(downloadURL)
+	if urlText == "" {
+		return ""
+	}
+	parsed, err := url.Parse(urlText)
+	if err == nil && parsed != nil {
+		switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+		case "builtin":
+			return "go-embedded"
+		case "local":
+			return "local"
+		case "http", "https":
+			if queryVersion := normalizeVersion(parsed.Query().Get("version")); queryVersion != "" {
+				return queryVersion
+			}
+			if tag := extractReleaseTagFromPath(parsed.Path); tag != "" {
+				return normalizeVersion(tag)
+			}
+		}
+	}
+	if tag := extractReleaseTagFromPath(urlText); tag != "" {
+		return normalizeVersion(tag)
+	}
+	return ""
+}
+
+func extractReleaseTagFromPath(pathText string) string {
+	segments := strings.Split(pathText, "/")
+	for index := 0; index < len(segments)-1; index++ {
+		if !strings.EqualFold(strings.TrimSpace(segments[index]), "download") {
+			continue
+		}
+		tag := strings.TrimSpace(segments[index+1])
+		if tag == "" || strings.EqualFold(tag, "latest") {
+			continue
+		}
+		if decoded, err := url.PathUnescape(tag); err == nil && strings.TrimSpace(decoded) != "" {
+			tag = strings.TrimSpace(decoded)
+		}
+		return tag
+	}
+	return ""
 }
 
 func resolveDriverRepositoryURL(repositoryURL string) (string, error) {
@@ -839,10 +1680,11 @@ func resolveManifestDriverPackages(manifestURL string) (map[string]pinnedDriverP
 		return copyPinnedPackageMap(cached.Packages), nil
 	}
 
-	packages, loadErr := loadManifestPackages(resolvedURL)
+	packages, versions, loadErr := loadManifestPackageAndVersions(resolvedURL)
 	entry := driverManifestCacheEntry{
 		LoadedAt: time.Now(),
 		Packages: copyPinnedPackageMap(packages),
+		Versions: copyVersionPackageMap(versions),
 	}
 	if loadErr != nil {
 		entry.Err = loadErr.Error()
@@ -857,15 +1699,50 @@ func resolveManifestDriverPackages(manifestURL string) (map[string]pinnedDriverP
 	return packages, nil
 }
 
-func loadManifestPackages(resolvedURL string) (map[string]pinnedDriverPackage, error) {
-	content, err := loadManifestContent(resolvedURL)
+func resolveManifestDriverVersionPackages(manifestURL string) (map[string][]pinnedDriverPackage, error) {
+	resolvedURL, err := resolveDriverRepositoryURL(manifestURL)
 	if err != nil {
 		return nil, err
 	}
 
+	driverManifestCacheMu.RLock()
+	cached, ok := driverManifestCache[resolvedURL]
+	driverManifestCacheMu.RUnlock()
+	if ok && time.Since(cached.LoadedAt) < driverManifestCacheTTL {
+		if strings.TrimSpace(cached.Err) != "" {
+			return nil, errors.New(cached.Err)
+		}
+		return copyVersionPackageMap(cached.Versions), nil
+	}
+
+	packages, versions, loadErr := loadManifestPackageAndVersions(resolvedURL)
+	entry := driverManifestCacheEntry{
+		LoadedAt: time.Now(),
+		Packages: copyPinnedPackageMap(packages),
+		Versions: copyVersionPackageMap(versions),
+	}
+	if loadErr != nil {
+		entry.Err = loadErr.Error()
+	}
+	driverManifestCacheMu.Lock()
+	driverManifestCache[resolvedURL] = entry
+	driverManifestCacheMu.Unlock()
+
+	if loadErr != nil {
+		return nil, loadErr
+	}
+	return versions, nil
+}
+
+func loadManifestPackageAndVersions(resolvedURL string) (map[string]pinnedDriverPackage, map[string][]pinnedDriverPackage, error) {
+	content, err := loadManifestContent(resolvedURL)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var manifest driverManifestFile
 	if err := json.Unmarshal(content, &manifest); err != nil {
-		return nil, fmt.Errorf("解析驱动清单失败：%w", err)
+		return nil, nil, fmt.Errorf("解析驱动清单失败：%w", err)
 	}
 	defaultEngine := normalizeDriverEngine(manifest.Engine)
 	if defaultEngine == "" {
@@ -876,32 +1753,95 @@ func loadManifestPackages(resolvedURL string) (map[string]pinnedDriverPackage, e
 	}
 
 	result := make(map[string]pinnedDriverPackage)
+	versionResult := make(map[string][]pinnedDriverPackage)
 	for driverType, item := range manifest.Drivers {
 		normalizedType := normalizeDriverType(driverType)
 		if normalizedType == "" {
 			continue
 		}
-		downloadURL := strings.TrimSpace(item.DownloadURL)
-		if downloadURL == "" {
-			downloadURL = strings.TrimSpace(item.DownloadURL2)
+		base := normalizeManifestDriverPackage(item.Version, item.DownloadURL, item.DownloadURL2, item.SHA256, item.ChecksumPolicy, item.ChecksumPolicy2, item.Engine, defaultEngine)
+		result[normalizedType] = base
+		versions := normalizeManifestDriverVersionList(item, base, defaultEngine)
+		if len(versions) == 0 {
+			versions = append(versions, base)
 		}
-		policy := strings.TrimSpace(item.ChecksumPolicy)
-		if policy == "" {
-			policy = strings.TrimSpace(item.ChecksumPolicy2)
-		}
-		engine := normalizeDriverEngine(item.Engine)
-		if engine == "" {
-			engine = defaultEngine
-		}
-		result[normalizedType] = pinnedDriverPackage{
-			Version:     strings.TrimSpace(item.Version),
-			DownloadURL: downloadURL,
-			SHA256:      strings.TrimSpace(item.SHA256),
-			Policy:      normalizeDriverChecksumPolicy(policy),
-			Engine:      engine,
-		}
+		versionResult[normalizedType] = versions
 	}
-	return result, nil
+	return result, versionResult, nil
+}
+
+func normalizeManifestDriverPackage(version, downloadURL, downloadURL2, sha256, policy, policy2, engine, defaultEngine string) pinnedDriverPackage {
+	urlText := strings.TrimSpace(downloadURL)
+	if urlText == "" {
+		urlText = strings.TrimSpace(downloadURL2)
+	}
+	policyText := strings.TrimSpace(policy)
+	if policyText == "" {
+		policyText = strings.TrimSpace(policy2)
+	}
+	engineText := normalizeDriverEngine(engine)
+	if engineText == "" {
+		engineText = defaultEngine
+	}
+	return pinnedDriverPackage{
+		Version:     strings.TrimSpace(version),
+		DownloadURL: urlText,
+		SHA256:      strings.TrimSpace(sha256),
+		Policy:      normalizeDriverChecksumPolicy(policyText),
+		Engine:      engineText,
+	}
+}
+
+func normalizeManifestDriverVersionList(item driverManifestItem, fallback pinnedDriverPackage, defaultEngine string) []pinnedDriverPackage {
+	rawVersions := make([]driverManifestVersionItem, 0, len(item.Versions)+len(item.VersionList)+len(item.VersionList2)+len(item.VersionOptions)+len(item.VersionOptions2))
+	rawVersions = append(rawVersions, item.Versions...)
+	rawVersions = append(rawVersions, item.VersionList...)
+	rawVersions = append(rawVersions, item.VersionList2...)
+	rawVersions = append(rawVersions, item.VersionOptions...)
+	rawVersions = append(rawVersions, item.VersionOptions2...)
+	if len(rawVersions) == 0 {
+		return nil
+	}
+
+	result := make([]pinnedDriverPackage, 0, len(rawVersions))
+	seen := make(map[string]struct{}, len(rawVersions))
+	for _, versionItem := range rawVersions {
+		pkg := normalizeManifestDriverPackage(
+			versionItem.Version,
+			versionItem.DownloadURL,
+			versionItem.DownloadURL2,
+			versionItem.SHA256,
+			versionItem.ChecksumPolicy,
+			versionItem.ChecksumPolicy2,
+			versionItem.Engine,
+			defaultEngine,
+		)
+		if pkg.Version == "" {
+			pkg.Version = fallback.Version
+		}
+		if pkg.DownloadURL == "" {
+			pkg.DownloadURL = fallback.DownloadURL
+		}
+		if pkg.SHA256 == "" {
+			pkg.SHA256 = fallback.SHA256
+		}
+		if pkg.Policy == "" {
+			pkg.Policy = fallback.Policy
+		}
+		if pkg.Engine == "" {
+			pkg.Engine = fallback.Engine
+		}
+		if pkg.Version == "" && pkg.DownloadURL == "" {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(pkg.Version)) + "|" + strings.TrimSpace(pkg.DownloadURL)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, pkg)
+	}
+	return result
 }
 
 func loadManifestContent(resolvedURL string) ([]byte, error) {
@@ -1054,7 +1994,7 @@ func hashFileSHA256(filePath string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-func installOptionalDriverAgentPackage(a *App, definition driverDefinition, resolvedDir string, downloadURL string) (installedDriverPackage, error) {
+func installOptionalDriverAgentPackage(a *App, definition driverDefinition, selectedVersion string, resolvedDir string, downloadURL string) (installedDriverPackage, error) {
 	driverType := normalizeDriverType(definition.Type)
 	executablePath, err := db.ResolveOptionalDriverAgentExecutablePath(resolvedDir, driverType)
 	if err != nil {
@@ -1075,6 +2015,7 @@ func installOptionalDriverAgentPackage(a *App, definition driverDefinition, reso
 	}
 	return installedDriverPackage{
 		DriverType:     driverType,
+		Version:        strings.TrimSpace(selectedVersion),
 		FilePath:       executablePath,
 		FileName:       filepath.Base(executablePath),
 		ExecutablePath: executablePath,
@@ -1727,6 +2668,32 @@ func loadReleaseAssetSizesCached(cacheKey string, fetch func() (*githubRelease, 
 		return nil, err
 	}
 	return entry.SizeByKey, nil
+}
+
+func readReleaseAssetSizesFromCache(cacheKey string) (map[string]int64, bool) {
+	key := strings.TrimSpace(cacheKey)
+	if key == "" {
+		return nil, false
+	}
+
+	driverReleaseSizeMu.RLock()
+	cached, ok := driverReleaseSizeMap[key]
+	driverReleaseSizeMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+
+	ttl := driverReleaseAssetSizeCacheTTL
+	if strings.TrimSpace(cached.Err) != "" {
+		ttl = driverReleaseAssetSizeErrorCacheTTL
+	}
+	if time.Since(cached.LoadedAt) >= ttl {
+		return nil, false
+	}
+	if strings.TrimSpace(cached.Err) != "" {
+		return nil, false
+	}
+	return cached.SizeByKey, true
 }
 
 func buildReleaseAssetSizeMap(release *githubRelease) map[string]int64 {

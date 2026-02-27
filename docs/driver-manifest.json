@@ -3,79 +3,79 @@
   "drivers": {
     "mariadb": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "1.9.3",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/mariadb"
     },
     "diros": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "1.9.3",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/diros"
     },
     "sphinx": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "1.9.3",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/sphinx"
     },
     "sqlserver": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "1.9.6",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/sqlserver"
     },
     "sqlite": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "1.44.3",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/sqlite"
     },
     "duckdb": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "2.5.5",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/duckdb"
     },
     "dameng": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "1.8.22",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/dameng"
     },
     "kingbase": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "0.0.0-20201021123113-29bd62a876c3",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/kingbase"
     },
     "highgo": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "0.0.0-local",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/highgo"
     },
     "vastbase": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "1.11.1",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/vastbase"
     },
     "mongodb": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "2.5.0",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/mongodb"
     },
     "tdengine": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "3.7.8",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/tdengine"
     },
     "postgres": {
       "engine": "go",
-      "version": "go-embedded",
+      "version": "1.11.1",
       "checksumPolicy": "off",
       "downloadUrl": "builtin://activate/postgres"
     }
