@@ -48,6 +48,26 @@ export namespace connection {
 		    return a;
 		}
 	}
+	export class ProxyConfig {
+	    type: string;
+	    host: string;
+	    port: number;
+	    user?: string;
+	    password?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.user = source["user"];
+	        this.password = source["password"];
+	    }
+	}
 	export class SSHConfig {
 	    host: string;
 	    port: number;
@@ -78,6 +98,8 @@ export namespace connection {
 	    database: string;
 	    useSSH: boolean;
 	    ssh: SSHConfig;
+	    useProxy?: boolean;
+	    proxy?: ProxyConfig;
 	    driver?: string;
 	    dsn?: string;
 	    timeout?: number;
@@ -110,6 +132,8 @@ export namespace connection {
 	        this.database = source["database"];
 	        this.useSSH = source["useSSH"];
 	        this.ssh = this.convertValues(source["ssh"], SSHConfig);
+	        this.useProxy = source["useProxy"];
+	        this.proxy = this.convertValues(source["proxy"], ProxyConfig);
 	        this.driver = source["driver"];
 	        this.dsn = source["dsn"];
 	        this.timeout = source["timeout"];
@@ -146,6 +170,7 @@ export namespace connection {
 		    return a;
 		}
 	}
+	
 	export class QueryResult {
 	    success: boolean;
 	    message: string;

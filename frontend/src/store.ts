@@ -155,6 +155,16 @@ const sanitizeConnectionConfig = (value: unknown): ConnectionConfig => {
     password: toTrimmedString(sshRaw.password),
     keyPath: toTrimmedString(sshRaw.keyPath),
   };
+  const proxyRaw = (raw.proxy && typeof raw.proxy === 'object') ? raw.proxy as Record<string, unknown> : {};
+  const proxyTypeRaw = toTrimmedString(proxyRaw.type, 'socks5').toLowerCase();
+  const proxyType: 'socks5' | 'http' = proxyTypeRaw === 'http' ? 'http' : 'socks5';
+  const proxy = {
+    type: proxyType,
+    host: toTrimmedString(proxyRaw.host),
+    port: normalizePort(proxyRaw.port, proxyTypeRaw === 'http' ? 8080 : 1080),
+    user: toTrimmedString(proxyRaw.user),
+    password: toTrimmedString(proxyRaw.password),
+  };
 
   const safeConfig: ConnectionConfig & Record<string, unknown> = {
     ...raw,
@@ -167,6 +177,8 @@ const sanitizeConnectionConfig = (value: unknown): ConnectionConfig => {
     database: toTrimmedString(raw.database),
     useSSH: !!raw.useSSH,
     ssh,
+    useProxy: !!raw.useProxy,
+    proxy,
     uri: toTrimmedString(raw.uri).slice(0, MAX_URI_LENGTH),
     hosts: sanitizeAddressList(raw.hosts),
     topology: raw.topology === 'replica' ? 'replica' : 'single',

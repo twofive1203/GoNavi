@@ -3,7 +3,7 @@ import { Modal, Form, Input, InputNumber, Button, message, Checkbox, Divider, Se
 import { DatabaseOutlined, ConsoleSqlOutlined, FileTextOutlined, CloudServerOutlined, AppstoreAddOutlined, CloudOutlined, CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
 import { useStore } from '../store';
 import { DBGetDatabases, GetDriverStatusList, MongoDiscoverMembers, TestConnection, RedisConnect, SelectSSHKeyFile } from '../../wailsjs/go/app/App';
-import { MongoMemberInfo, SavedConnection } from '../types';
+import { ConnectionConfig, MongoMemberInfo, SavedConnection } from '../types';
 
 const { Meta } = Card;
 const { Text } = Typography;
@@ -58,6 +58,7 @@ const ConnectionModal: React.FC<{
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [useSSH, setUseSSH] = useState(false);
+  const [useProxy, setUseProxy] = useState(false);
   const [dbType, setDbType] = useState('mysql');
   const [step, setStep] = useState(1); // 1: Select Type, 2: Configure
   const [activeGroup, setActiveGroup] = useState(0); // Active category index in step 1
@@ -655,6 +656,12 @@ const ConnectionModal: React.FC<{
                   sshUser: config.ssh?.user,
                   sshPassword: config.ssh?.password,
                   sshKeyPath: config.ssh?.keyPath,
+                  useProxy: config.useProxy,
+                  proxyType: config.proxy?.type || 'socks5',
+                  proxyHost: config.proxy?.host,
+                  proxyPort: config.proxy?.port,
+                  proxyUser: config.proxy?.user,
+                  proxyPassword: config.proxy?.password,
                   driver: config.driver,
                   dsn: config.dsn,
                   timeout: config.timeout || 30,
@@ -674,6 +681,7 @@ const ConnectionModal: React.FC<{
                   mongoReplicaPassword: config.mongoReplicaPassword || ''
               });
               setUseSSH(config.useSSH || false);
+              setUseProxy(config.useProxy || false);
               setDbType(configType);
               // 如果是 Redis 编辑模式，设置已保存的 Redis 数据库列表
               if (configType === 'redis') {
@@ -684,6 +692,7 @@ const ConnectionModal: React.FC<{
               setStep(1);
               form.resetFields();
               setUseSSH(false);
+              setUseProxy(false);
               setDbType('mysql');
               setActiveGroup(0);
           }
@@ -733,6 +742,7 @@ const ConnectionModal: React.FC<{
       setLoading(false);
       form.resetFields();
       setUseSSH(false);
+      setUseProxy(false);
       setDbType('mysql');
       setStep(1);
       onClose();
@@ -852,7 +862,7 @@ const ConnectionModal: React.FC<{
       }
   };
 
-  const buildConfig = async (values: any, forPersist: boolean) => {
+  const buildConfig = async (values: any, forPersist: boolean): Promise<ConnectionConfig> => {
       const mergedValues = { ...values };
       const parsedUriValues = parseUriToValues(mergedValues.uri, mergedValues.type);
       const isEmptyField = (value: unknown) => (
@@ -951,6 +961,22 @@ const ConnectionModal: React.FC<{
           password: mergedValues.sshPassword || "",
           keyPath: mergedValues.sshKeyPath || ""
       } : { host: "", port: 22, user: "", password: "", keyPath: "" };
+      const effectiveUseProxy = !isFileDbType && !!mergedValues.useProxy;
+      const proxyTypeRaw = String(mergedValues.proxyType || 'socks5').toLowerCase();
+      const proxyType: 'socks5' | 'http' = proxyTypeRaw === 'http' ? 'http' : 'socks5';
+      const proxyConfig: NonNullable<ConnectionConfig['proxy']> = effectiveUseProxy ? {
+          type: proxyType,
+          host: String(mergedValues.proxyHost || '').trim(),
+          port: Number(mergedValues.proxyPort || (proxyTypeRaw === 'http' ? 8080 : 1080)),
+          user: String(mergedValues.proxyUser || '').trim(),
+          password: mergedValues.proxyPassword || "",
+      } : {
+          type: 'socks5',
+          host: '',
+          port: 1080,
+          user: '',
+          password: '',
+      };
 
       const keepPassword = !forPersist || savePassword;
 
@@ -964,6 +990,8 @@ const ConnectionModal: React.FC<{
           database: mergedValues.database || "",
           useSSH: !!mergedValues.useSSH,
           ssh: sshConfig,
+          useProxy: effectiveUseProxy,
+          proxy: proxyConfig,
           driver: mergedValues.driver,
           dsn: mergedValues.dsn,
           timeout: Number(mergedValues.timeout || 30),
@@ -997,6 +1025,7 @@ const ConnectionModal: React.FC<{
       const defaultPort = getDefaultPortByType(type);
       if (isFileDatabaseType(type)) {
           setUseSSH(false);
+          setUseProxy(false);
           form.setFieldsValue({
               host: '',
               port: 0,
@@ -1009,6 +1038,12 @@ const ConnectionModal: React.FC<{
               sshUser: '',
               sshPassword: '',
               sshKeyPath: '',
+              useProxy: false,
+              proxyType: 'socks5',
+              proxyHost: '',
+              proxyPort: 1080,
+              proxyUser: '',
+              proxyPassword: '',
               mysqlTopology: 'single',
               mongoTopology: 'single',
               mongoSrv: false,
@@ -1167,6 +1202,9 @@ const ConnectionModal: React.FC<{
             user: 'root',
             useSSH: false,
             sshPort: 22,
+            useProxy: false,
+            proxyType: 'socks5',
+            proxyPort: 1080,
             timeout: 30,
             uri: '',
             mysqlTopology: 'single',
@@ -1191,6 +1229,21 @@ const ConnectionModal: React.FC<{
                 setUriFeedback(null);
             }
             if (changed.useSSH !== undefined) setUseSSH(changed.useSSH);
+            if (changed.useProxy !== undefined) setUseProxy(changed.useProxy);
+            if (changed.proxyType !== undefined) {
+                const nextType = String(changed.proxyType || 'socks5').toLowerCase();
+                if (nextType === 'http') {
+                    const currentPort = Number(form.getFieldValue('proxyPort') || 0);
+                    if (!currentPort || currentPort === 1080) {
+                        form.setFieldValue('proxyPort', 8080);
+                    }
+                } else {
+                    const currentPort = Number(form.getFieldValue('proxyPort') || 0);
+                    if (!currentPort || currentPort === 8080) {
+                        form.setFieldValue('proxyPort', 1080);
+                    }
+                }
+            }
             // Type change handled by step 1, but keep sync if select changes (hidden now)
             if (changed.type !== undefined) setDbType(changed.type);
             if (
@@ -1528,6 +1581,38 @@ const ConnectionModal: React.FC<{
                             </Button>
                         </Space.Compact>
                     </Form.Item>
+                </div>
+            )}
+
+            <Divider style={{ margin: '12px 0' }} />
+            <Form.Item name="useProxy" valuePropName="checked" style={{ marginBottom: 0 }}>
+                <Checkbox>使用代理 (SOCKS5 / HTTP CONNECT)</Checkbox>
+            </Form.Item>
+
+            {useProxy && (
+                <div style={{ padding: '12px', background: '#f5f5f5', borderRadius: 6, marginTop: 12 }}>
+                    <div style={{ display: 'flex', gap: 16 }}>
+                        <Form.Item name="proxyType" label="代理类型" rules={[{ required: useProxy, message: '请选择代理类型' }]} style={{ width: 180 }}>
+                            <Select options={[
+                                { value: 'socks5', label: 'SOCKS5' },
+                                { value: 'http', label: 'HTTP CONNECT' },
+                            ]} />
+                        </Form.Item>
+                        <Form.Item name="proxyHost" label="代理主机" rules={[{ required: useProxy, message: '请输入代理主机' }]} style={{ flex: 1 }}>
+                            <Input placeholder="例如: 127.0.0.1 或 proxy.company.com" />
+                        </Form.Item>
+                        <Form.Item name="proxyPort" label="端口" rules={[{ required: useProxy, message: '请输入代理端口' }]} style={{ width: 120 }}>
+                            <InputNumber style={{ width: '100%' }} min={1} max={65535} />
+                        </Form.Item>
+                    </div>
+                    <div style={{ display: 'flex', gap: 16 }}>
+                        <Form.Item name="proxyUser" label="代理用户名（可选）" style={{ flex: 1 }}>
+                            <Input placeholder="留空表示无认证" />
+                        </Form.Item>
+                        <Form.Item name="proxyPassword" label="代理密码（可选）" style={{ flex: 1 }}>
+                            <Input.Password placeholder="留空表示无认证" />
+                        </Form.Item>
+                    </div>
                 </div>
             )}
 

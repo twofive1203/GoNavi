@@ -6,6 +6,14 @@ export interface SSHConfig {
   keyPath?: string;
 }
 
+export interface ProxyConfig {
+  type: 'socks5' | 'http';
+  host: string;
+  port: number;
+  user?: string;
+  password?: string;
+}
+
 export interface ConnectionConfig {
   type: string;
   host: string;
@@ -16,6 +24,8 @@ export interface ConnectionConfig {
   database?: string;
   useSSH?: boolean;
   ssh?: SSHConfig;
+  useProxy?: boolean;
+  proxy?: ProxyConfig;
   driver?: string;
   dsn?: string;
   timeout?: number;

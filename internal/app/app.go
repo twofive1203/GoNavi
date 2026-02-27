@@ -15,6 +15,7 @@ import (
 	"GoNavi-Wails/internal/connection"
 	"GoNavi-Wails/internal/db"
 	"GoNavi-Wails/internal/logger"
+	proxytunnel "GoNavi-Wails/internal/proxy"
 )
 
 const dbCachePingInterval = 30 * time.Second
@@ -66,6 +67,7 @@ func (a *App) Shutdown(ctx context.Context) {
 			logger.Error(err, "关闭数据库连接失败")
 		}
 	}
+	proxytunnel.CloseAllForwarders()
 	// Close all Redis connections
 	CloseAllRedisClients()
 	logger.Infof("资源释放完成，应用已关闭")
@@ -76,6 +78,9 @@ func (a *App) Shutdown(ctx context.Context) {
 func getCacheKey(config connection.ConnectionConfig) string {
 	if !config.UseSSH {
 		config.SSH = connection.SSHConfig{}
+	}
+	if !config.UseProxy {
+		config.Proxy = connection.ProxyConfig{}
 	}
 	// 保持与驱动默认一致，避免同一连接被重复缓存
 	if config.Type == "postgres" && config.Database == "" {
@@ -175,6 +180,12 @@ func formatConnSummary(config connection.ConnectionConfig) string {
 	if config.UseSSH {
 		b.WriteString(fmt.Sprintf(" SSH=%s:%d 用户=%s", config.SSH.Host, config.SSH.Port, config.SSH.User))
 	}
+	if config.UseProxy {
+		b.WriteString(fmt.Sprintf(" 代理=%s://%s:%d", strings.ToLower(strings.TrimSpace(config.Proxy.Type)), config.Proxy.Host, config.Proxy.Port))
+		if strings.TrimSpace(config.Proxy.User) != "" {
+			b.WriteString(" 代理认证=已配置")
+		}
+	}
 
 	if config.Type == "custom" {
 		driver := strings.TrimSpace(config.Driver)
@@ -269,7 +280,14 @@ func (a *App) getDatabaseWithPing(config connection.ConnectionConfig, forcePing 
 		return nil, err
 	}
 
-	if err := dbInst.Connect(config); err != nil {
+	connectConfig, proxyErr := resolveDialConfigWithProxy(config)
+	if proxyErr != nil {
+		wrapped := wrapConnectError(config, proxyErr)
+		logger.Error(wrapped, "连接代理准备失败：%s 缓存Key=%s", formatConnSummary(config), shortKey)
+		return nil, wrapped
+	}
+
+	if err := dbInst.Connect(connectConfig); err != nil {
 		wrapped := wrapConnectError(config, err)
 		logger.Error(wrapped, "建立数据库连接失败：%s 缓存Key=%s", formatConnSummary(config), shortKey)
 		return nil, wrapped

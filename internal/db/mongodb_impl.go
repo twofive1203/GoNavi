@@ -14,6 +14,7 @@ import (
 
 	"GoNavi-Wails/internal/connection"
 	"GoNavi-Wails/internal/logger"
+	proxytunnel "GoNavi-Wails/internal/proxy"
 	"GoNavi-Wails/internal/ssh"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -27,6 +28,14 @@ type MongoDB struct {
 	database    string
 	pingTimeout time.Duration
 	forwarder   *ssh.LocalForwarder
+}
+
+type mongoProxyDialer struct {
+	proxyConfig connection.ProxyConfig
+}
+
+func (d *mongoProxyDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return proxytunnel.DialContext(ctx, d.proxyConfig, network, address)
 }
 
 const defaultMongoPort = 27017
@@ -328,6 +337,9 @@ func (m *MongoDB) Connect(config connection.ConnectionConfig) error {
 
 		uri := m.getURI(attemptConfig)
 		clientOpts := options.Client().ApplyURI(uri)
+		if attemptConfig.UseProxy {
+			clientOpts.SetDialer(&mongoProxyDialer{proxyConfig: attemptConfig.Proxy})
+		}
 		client, err := mongo.Connect(clientOpts)
 		if err != nil {
 			errorDetails = append(errorDetails, fmt.Sprintf("%s连接失败: %v", authLabel, err))
