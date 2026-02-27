@@ -16,6 +16,10 @@ const REDIS_TREE_KEY_TTL_WIDTH = 92;
 const REDIS_TREE_HIDE_TTL_THRESHOLD = 460;
 const REDIS_KEY_INITIAL_LOAD_COUNT = 2000;
 const REDIS_KEY_LOAD_MORE_COUNT = 2000;
+const REDIS_KEY_SEARCH_INITIAL_LOAD_COUNT = 600;
+const REDIS_KEY_SEARCH_LOAD_MORE_COUNT = 1000;
+const REDIS_LARGE_KEYSPACE_THRESHOLD = 10000;
+const REDIS_LARGE_KEYSPACE_MAX_EXPANDED_GROUPS = 200;
 
 interface RedisViewerProps {
     connectionId: string;
@@ -241,13 +245,40 @@ type RedisKeyTreeGroup = {
     path: string;
     children: Map<string, RedisKeyTreeGroup>;
     leaves: RedisKeyTreeLeaf[];
+    leafCount: number;
 };
 
 type RedisKeyTreeResult = {
-    treeData: DataNode[];
-    rawKeyByNodeKey: Map<string, string>;
-    leafNodeKeyByRawKey: Map<string, string>;
+    treeData: RedisTreeDataNode[];
     groupKeys: string[];
+};
+
+type RedisTreeDataNode = DataNode & {
+    nodeType: 'group' | 'leaf';
+    groupName?: string;
+    groupLeafCount?: number;
+    leafLabel?: string;
+    rawKey?: string;
+    keyType?: string;
+    ttl?: number;
+};
+
+const buildLeafNodeKey = (rawKey: string): string => `key:${rawKey}`;
+
+const parseRawKeyFromNodeKey = (nodeKey: React.Key): string | null => {
+    const keyText = String(nodeKey);
+    if (!keyText.startsWith('key:')) {
+        return null;
+    }
+    return keyText.slice(4);
+};
+
+const getRedisScanLoadCount = (pattern: string, append: boolean): number => {
+    const normalizedPattern = pattern.trim() || '*';
+    if (normalizedPattern === '*') {
+        return append ? REDIS_KEY_LOAD_MORE_COUNT : REDIS_KEY_INITIAL_LOAD_COUNT;
+    }
+    return append ? REDIS_KEY_SEARCH_LOAD_MORE_COUNT : REDIS_KEY_SEARCH_INITIAL_LOAD_COUNT;
 };
 
 const normalizeKeySegment = (segment: string): string => {
@@ -255,22 +286,21 @@ const normalizeKeySegment = (segment: string): string => {
 };
 
 const createTreeGroup = (name: string, path: string): RedisKeyTreeGroup => {
-    return { name, path, children: new Map(), leaves: [] };
+    return { name, path, children: new Map(), leaves: [], leafCount: 0 };
 };
 
-const countGroupLeafNodes = (group: RedisKeyTreeGroup): number => {
+const calculateGroupLeafCount = (group: RedisKeyTreeGroup): number => {
     let count = group.leaves.length;
     group.children.forEach((child) => {
-        count += countGroupLeafNodes(child);
+        count += calculateGroupLeafCount(child);
     });
+    group.leafCount = count;
     return count;
 };
 
 const buildRedisKeyTree = (
     keys: RedisKeyInfo[],
-    formatTTL: (ttl: number) => string,
-    getTypeColor: (type: string) => string,
-    showTTL: boolean
+    sortLeafNodes: boolean
 ): RedisKeyTreeResult => {
     const root = createTreeGroup('__root__', '__root__');
 
@@ -300,105 +330,41 @@ const buildRedisKeyTree = (
 
         current.leaves.push({ keyInfo, label: leafLabel });
     });
+    calculateGroupLeafCount(root);
 
-    const rawKeyByNodeKey = new Map<string, string>();
-    const leafNodeKeyByRawKey = new Map<string, string>();
     const groupKeys: string[] = [];
 
-    const toTreeNodes = (group: RedisKeyTreeGroup): DataNode[] => {
+    const toTreeNodes = (group: RedisKeyTreeGroup): RedisTreeDataNode[] => {
         const childGroups = Array.from(group.children.values()).sort((a, b) => a.name.localeCompare(b.name));
-        const childLeaves = [...group.leaves].sort((a, b) => a.keyInfo.key.localeCompare(b.keyInfo.key));
+        const childLeaves = sortLeafNodes
+            ? [...group.leaves].sort((a, b) => a.keyInfo.key.localeCompare(b.keyInfo.key))
+            : group.leaves;
 
-        const groupNodes: DataNode[] = childGroups.map((child) => {
+        const groupNodes: RedisTreeDataNode[] = childGroups.map((child) => {
             const groupNodeKey = `group:${child.path}`;
             groupKeys.push(groupNodeKey);
             return {
                 key: groupNodeKey,
-                title: (
-                    <Space size={6}>
-                        <FolderOpenOutlined style={{ color: '#8c8c8c' }} />
-                        <span>{child.name}</span>
-                        <span style={{ fontSize: 12, color: '#999' }}>({countGroupLeafNodes(child)})</span>
-                    </Space>
-                ),
+                title: child.name,
+                nodeType: 'group',
+                groupName: child.name,
+                groupLeafCount: child.leafCount,
                 selectable: false,
                 disableCheckbox: true,
                 children: toTreeNodes(child),
             };
         });
 
-        const leafNodes: DataNode[] = childLeaves.map((leaf) => {
-            const nodeKey = `key:${leaf.keyInfo.key}`;
-            rawKeyByNodeKey.set(nodeKey, leaf.keyInfo.key);
-            leafNodeKeyByRawKey.set(leaf.keyInfo.key, nodeKey);
+        const leafNodes: RedisTreeDataNode[] = childLeaves.map((leaf) => {
             return {
-                key: nodeKey,
+                key: buildLeafNodeKey(leaf.keyInfo.key),
                 isLeaf: true,
-                title: (
-                    <div
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            minWidth: 0,
-                            width: '100%',
-                            overflow: 'hidden',
-                        }}
-                    >
-                        <div
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 6,
-                                minWidth: 0,
-                                flex: 1,
-                                overflow: 'hidden',
-                            }}
-                        >
-                            <KeyOutlined style={{ color: '#1677ff', flexShrink: 0 }} />
-                            <Tooltip title={leaf.keyInfo.key}>
-                                <span
-                                    style={{
-                                        minWidth: 0,
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                        whiteSpace: 'nowrap',
-                                        display: 'block',
-                                    }}
-                                >
-                                    {leaf.label}
-                                </span>
-                            </Tooltip>
-                        </div>
-                        <Tag
-                            color={getTypeColor(leaf.keyInfo.type)}
-                            style={{
-                                marginInlineEnd: 0,
-                                width: showTTL ? REDIS_TREE_KEY_TYPE_WIDTH : REDIS_TREE_KEY_TYPE_WIDTH_NARROW,
-                                textAlign: 'center',
-                                flexShrink: 0
-                            }}
-                        >
-                            {leaf.keyInfo.type}
-                        </Tag>
-                        {showTTL && (
-                            <span
-                                style={{
-                                    width: REDIS_TREE_KEY_TTL_WIDTH,
-                                    fontSize: 12,
-                                    color: '#999',
-                                    textAlign: 'left',
-                                    whiteSpace: 'nowrap',
-                                    flexShrink: 0,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                }}
-                            >
-                                {formatTTL(leaf.keyInfo.ttl)}
-                            </span>
-                        )}
-                    </div>
-                ),
+                title: leaf.label,
+                nodeType: 'leaf',
+                leafLabel: leaf.label,
+                rawKey: leaf.keyInfo.key,
+                keyType: leaf.keyInfo.type,
+                ttl: leaf.keyInfo.ttl,
             };
         });
 
@@ -407,8 +373,6 @@ const buildRedisKeyTree = (
 
     return {
         treeData: toTreeNodes(root),
-        rawKeyByNodeKey,
-        leafNodeKeyByRawKey,
         groupKeys,
     };
 };
@@ -445,11 +409,14 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
         onSave: (newValue: string) => Promise<void>;
     } | null>(null);
     const jsonEditValueRef = useRef<string>('');
+    const latestLoadRequestIdRef = useRef(0);
 
     // 面板宽度状态和 ref - 默认占据 50% 宽度
     const [leftPanelWidth, setLeftPanelWidth] = useState<number | string>('50%');
     const leftPanelRef = useRef<HTMLDivElement>(null);
+    const treeContainerRef = useRef<HTMLDivElement>(null);
     const [showTreeKeyTTL, setShowTreeKeyTTL] = useState(true);
+    const [treeHeight, setTreeHeight] = useState(500);
     const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
 
     const getConfig = useCallback(() => {
@@ -468,14 +435,22 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
         pattern: string = '*',
         fromCursor: number = 0,
         append: boolean = false,
-        targetCount: number = REDIS_KEY_INITIAL_LOAD_COUNT
+        targetCount?: number
     ) => {
         const config = getConfig();
         if (!config) return;
 
+        const normalizedPattern = pattern.trim() || '*';
+        const effectiveTargetCount = targetCount ?? getRedisScanLoadCount(normalizedPattern, append);
+        const requestId = latestLoadRequestIdRef.current + 1;
+        latestLoadRequestIdRef.current = requestId;
+
         setLoading(true);
         try {
-            const res = await (window as any).go.app.App.RedisScanKeys(config, pattern, fromCursor, targetCount);
+            const res = await (window as any).go.app.App.RedisScanKeys(config, normalizedPattern, fromCursor, effectiveTargetCount);
+            if (requestId !== latestLoadRequestIdRef.current) {
+                return;
+            }
             if (res.success) {
                 const result = res.data;
                 const scannedKeys = Array.isArray(result?.keys) ? result.keys : [];
@@ -496,33 +471,38 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                 message.error('加载 Key 失败: ' + res.message);
             }
         } catch (e: any) {
+            if (requestId !== latestLoadRequestIdRef.current) {
+                return;
+            }
             message.error('加载 Key 失败: ' + (e?.message || String(e)));
         } finally {
-            setLoading(false);
+            if (requestId === latestLoadRequestIdRef.current) {
+                setLoading(false);
+            }
         }
     }, [getConfig]);
 
     useEffect(() => {
-        loadKeys(searchPattern, 0, false, REDIS_KEY_INITIAL_LOAD_COUNT);
+        loadKeys(searchPattern, 0, false, getRedisScanLoadCount(searchPattern, false));
     }, [redisDB]);
 
     const handleSearch = (value: string) => {
         const pattern = value.trim() || '*';
         setSearchPattern(pattern);
         setCursor(0);
-        loadKeys(pattern, 0, false, REDIS_KEY_INITIAL_LOAD_COUNT);
+        loadKeys(pattern, 0, false, getRedisScanLoadCount(pattern, false));
     };
 
     const handleLoadMore = () => {
         if (!hasMore || loading) {
             return;
         }
-        loadKeys(searchPattern, cursor, true, REDIS_KEY_LOAD_MORE_COUNT);
+        loadKeys(searchPattern, cursor, true, getRedisScanLoadCount(searchPattern, true));
     };
 
     const handleRefresh = () => {
         setCursor(0);
-        loadKeys(searchPattern, 0, false, REDIS_KEY_INITIAL_LOAD_COUNT);
+        loadKeys(searchPattern, 0, false, getRedisScanLoadCount(searchPattern, false));
     };
 
     const loadKeyValue = async (key: string) => {
@@ -678,23 +658,51 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
         return () => window.removeEventListener('resize', handleWindowResize);
     }, []);
 
+    useEffect(() => {
+        const target = treeContainerRef.current;
+        if (!target) return;
+
+        const updateTreeHeight = (nextHeight: number) => {
+            if (nextHeight <= 0) return;
+            setTreeHeight((prev) => (prev === nextHeight ? prev : nextHeight));
+        };
+
+        updateTreeHeight(Math.round(target.getBoundingClientRect().height));
+
+        if (typeof ResizeObserver !== 'undefined') {
+            const observer = new ResizeObserver((entries) => {
+                const nextHeight = Math.round(entries[0]?.contentRect.height || target.getBoundingClientRect().height);
+                updateTreeHeight(nextHeight);
+            });
+            observer.observe(target);
+            return () => observer.disconnect();
+        }
+
+        const handleWindowResize = () => {
+            updateTreeHeight(Math.round(target.getBoundingClientRect().height));
+        };
+        window.addEventListener('resize', handleWindowResize);
+        return () => window.removeEventListener('resize', handleWindowResize);
+    }, []);
+
+    const isLargeKeyspace = keys.length >= REDIS_LARGE_KEYSPACE_THRESHOLD;
+
     const keyTree = useMemo(() => {
-        return buildRedisKeyTree(keys, formatTTL, getTypeColor, showTreeKeyTTL);
-    }, [keys, showTreeKeyTTL]);
+        return buildRedisKeyTree(keys, !isLargeKeyspace);
+    }, [isLargeKeyspace, keys]);
+
+    const groupKeySet = useMemo(() => new Set(keyTree.groupKeys), [keyTree.groupKeys]);
 
     const selectedTreeNodeKeys = useMemo(() => {
         if (!selectedKey) {
             return [] as string[];
         }
-        const nodeKey = keyTree.leafNodeKeyByRawKey.get(selectedKey);
-        return nodeKey ? [nodeKey] : [];
-    }, [selectedKey, keyTree]);
+        return [buildLeafNodeKey(selectedKey)];
+    }, [selectedKey]);
 
     const checkedTreeNodeKeys = useMemo(() => {
-        return selectedKeys
-            .map(rawKey => keyTree.leafNodeKeyByRawKey.get(rawKey))
-            .filter((nodeKey): nodeKey is string => Boolean(nodeKey));
-    }, [selectedKeys, keyTree]);
+        return selectedKeys.map(rawKey => buildLeafNodeKey(rawKey));
+    }, [selectedKeys]);
 
     useEffect(() => {
         const existingKeySet = new Set(keys.map(item => item.key));
@@ -703,16 +711,19 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
 
     useEffect(() => {
         setExpandedGroupKeys((prev) => {
-            const validKeys = prev.filter(nodeKey => keyTree.groupKeys.includes(nodeKey));
-            return validKeys;
+            const validKeys = prev.filter(nodeKey => groupKeySet.has(nodeKey));
+            if (!isLargeKeyspace) {
+                return validKeys;
+            }
+            return validKeys.slice(0, REDIS_LARGE_KEYSPACE_MAX_EXPANDED_GROUPS);
         });
-    }, [keyTree]);
+    }, [groupKeySet, isLargeKeyspace]);
 
     const handleTreeSelect = (nodeKeys: React.Key[]) => {
         if (nodeKeys.length === 0) {
             return;
         }
-        const rawKey = keyTree.rawKeyByNodeKey.get(String(nodeKeys[0]));
+        const rawKey = parseRawKeyFromNodeKey(nodeKeys[0]);
         if (!rawKey) {
             return;
         }
@@ -722,9 +733,117 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
     const handleTreeCheck = (checked: React.Key[] | { checked: React.Key[]; halfChecked: React.Key[] }) => {
         const checkedNodeKeys = Array.isArray(checked) ? checked : checked.checked;
         const rawKeys = checkedNodeKeys
-            .map(nodeKey => keyTree.rawKeyByNodeKey.get(String(nodeKey)))
+            .map(nodeKey => parseRawKeyFromNodeKey(nodeKey))
             .filter((rawKey): rawKey is string => Boolean(rawKey));
         setSelectedKeys(rawKeys);
+    };
+
+    const renderTreeNodeTitle = useCallback((nodeData: DataNode) => {
+        const treeNode = nodeData as RedisTreeDataNode;
+
+        if (treeNode.nodeType === 'group') {
+            return (
+                <Space size={6}>
+                    <FolderOpenOutlined style={{ color: '#8c8c8c' }} />
+                    <span>{treeNode.groupName}</span>
+                    <span style={{ fontSize: 12, color: '#999' }}>({treeNode.groupLeafCount ?? 0})</span>
+                </Space>
+            );
+        }
+
+        const leafLabel = treeNode.leafLabel ?? '';
+        const rawKey = treeNode.rawKey ?? parseRawKeyFromNodeKey(treeNode.key ?? '') ?? '';
+        const keyType = treeNode.keyType ?? 'unknown';
+        const ttl = typeof treeNode.ttl === 'number' ? treeNode.ttl : -1;
+
+        if (isLargeKeyspace) {
+            return (
+                <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span>{leafLabel}</span>
+                    <span style={{ marginLeft: 8, color: '#999', fontSize: 12 }}>[{keyType}]</span>
+                    {showTreeKeyTTL && (
+                        <span style={{ marginLeft: 8, color: '#999', fontSize: 12 }}>{formatTTL(ttl)}</span>
+                    )}
+                </div>
+            );
+        }
+
+        return (
+            <div
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    minWidth: 0,
+                    width: '100%',
+                    overflow: 'hidden',
+                }}
+            >
+                <div
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        minWidth: 0,
+                        flex: 1,
+                        overflow: 'hidden',
+                    }}
+                >
+                    <KeyOutlined style={{ color: '#1677ff', flexShrink: 0 }} />
+                    <Tooltip title={rawKey}>
+                        <span
+                            style={{
+                                minWidth: 0,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                display: 'block',
+                            }}
+                        >
+                            {leafLabel}
+                        </span>
+                    </Tooltip>
+                </div>
+                <Tag
+                    color={getTypeColor(keyType)}
+                    style={{
+                        marginInlineEnd: 0,
+                        width: showTreeKeyTTL ? REDIS_TREE_KEY_TYPE_WIDTH : REDIS_TREE_KEY_TYPE_WIDTH_NARROW,
+                        textAlign: 'center',
+                        flexShrink: 0
+                    }}
+                >
+                    {keyType}
+                </Tag>
+                {showTreeKeyTTL && (
+                    <span
+                        style={{
+                            width: REDIS_TREE_KEY_TTL_WIDTH,
+                            fontSize: 12,
+                            color: '#999',
+                            textAlign: 'left',
+                            whiteSpace: 'nowrap',
+                            flexShrink: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                        }}
+                    >
+                        {formatTTL(ttl)}
+                    </span>
+                )}
+            </div>
+        );
+    }, [formatTTL, getTypeColor, isLargeKeyspace, showTreeKeyTTL]);
+
+    const handleTreeExpand = (nextExpandedKeys: React.Key[]) => {
+        const validGroupKeys = nextExpandedKeys
+            .map(key => String(key))
+            .filter(nodeKey => groupKeySet.has(nodeKey));
+        if (isLargeKeyspace) {
+            setExpandedGroupKeys(validGroupKeys.slice(0, REDIS_LARGE_KEYSPACE_MAX_EXPANDED_GROUPS));
+            return;
+        }
+        setExpandedGroupKeys(validGroupKeys);
     };
 
     const renderValueEditor = () => {
@@ -1769,24 +1888,34 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                         </Popconfirm>
                     </div>
                 </div>
-                <div style={{ flex: 1, overflow: 'auto' }}>
-                    <Spin spinning={loading} size="small">
-                        <Tree
-                            blockNode
-                            showIcon={false}
-                            checkable
-                            checkStrictly
-                            selectable
-                            treeData={keyTree.treeData}
-                            selectedKeys={selectedTreeNodeKeys}
-                            checkedKeys={checkedTreeNodeKeys}
-                            expandedKeys={expandedGroupKeys}
-                            onExpand={(nextExpandedKeys) => setExpandedGroupKeys(nextExpandedKeys as string[])}
-                            onSelect={(nodeKeys) => handleTreeSelect(nodeKeys)}
-                            onCheck={(checked) => handleTreeCheck(checked)}
-                            style={{ padding: '8px 6px' }}
-                        />
-                    </Spin>
+                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                    {isLargeKeyspace && (
+                        <div style={{ padding: '6px 8px', fontSize: 12, color: '#8c8c8c', borderBottom: '1px solid #f0f0f0' }}>
+                            已启用大数据量性能模式（简化节点渲染，最多保留 {REDIS_LARGE_KEYSPACE_MAX_EXPANDED_GROUPS} 个展开分组）
+                        </div>
+                    )}
+                    <div ref={treeContainerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                        <Spin spinning={loading} size="small" style={{ width: '100%' }}>
+                            <Tree
+                                blockNode
+                                showIcon={false}
+                                checkable
+                                checkStrictly
+                                selectable
+                                virtual
+                                height={Math.max(treeHeight - 8, 220)}
+                                treeData={keyTree.treeData}
+                                titleRender={renderTreeNodeTitle}
+                                selectedKeys={selectedTreeNodeKeys}
+                                checkedKeys={checkedTreeNodeKeys}
+                                expandedKeys={expandedGroupKeys}
+                                onExpand={handleTreeExpand}
+                                onSelect={(nodeKeys) => handleTreeSelect(nodeKeys)}
+                                onCheck={(checked) => handleTreeCheck(checked)}
+                                style={{ padding: '8px 6px' }}
+                            />
+                        </Spin>
+                    </div>
                     {hasMore && (
                         <div style={{ padding: 8, textAlign: 'center' }}>
                             <Button onClick={handleLoadMore} loading={loading} disabled={!hasMore || loading}>加载更多</Button>

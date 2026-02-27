@@ -14,12 +14,12 @@ export function CheckForUpdates() {
   return window['go']['app']['App']['CheckForUpdates']();
 }
 
-export function ConfigureGlobalProxy(arg1, arg2) {
-  return window['go']['app']['App']['ConfigureGlobalProxy'](arg1, arg2);
-}
-
 export function ConfigureDriverRuntimeDirectory(arg1) {
   return window['go']['app']['App']['ConfigureDriverRuntimeDirectory'](arg1);
+}
+
+export function ConfigureGlobalProxy(arg1, arg2) {
+  return window['go']['app']['App']['ConfigureGlobalProxy'](arg1, arg2);
 }
 
 export function CreateDatabase(arg1, arg2) {

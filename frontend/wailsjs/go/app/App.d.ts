@@ -10,9 +10,9 @@ export function CheckDriverNetworkStatus():Promise<connection.QueryResult>;
 
 export function CheckForUpdates():Promise<connection.QueryResult>;
 
-export function ConfigureGlobalProxy(arg1:boolean,arg2:connection.ProxyConfig):Promise<connection.QueryResult>;
-
 export function ConfigureDriverRuntimeDirectory(arg1:string):Promise<connection.QueryResult>;
+
+export function ConfigureGlobalProxy(arg1:boolean,arg2:connection.ProxyConfig):Promise<connection.QueryResult>;
 
 export function CreateDatabase(arg1:connection.ConnectionConfig,arg2:string):Promise<connection.QueryResult>;
 

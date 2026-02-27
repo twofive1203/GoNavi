@@ -28,6 +28,11 @@ const (
 	redisScanMinStepCount       int64 = 200
 	redisScanMaxStepCount       int64 = 2000
 	redisScanMaxRounds                = 64
+	redisScanMaxDuration              = 12 * time.Second
+	redisSearchMaxTargetCount   int64 = 1000
+	redisSearchMaxStepCount     int64 = 1000
+	redisSearchMaxRounds              = 16
+	redisSearchMaxDuration            = 3 * time.Second
 )
 
 // NewRedisClient creates a new Redis client instance
@@ -110,21 +115,41 @@ func (r *RedisClientImpl) ScanKeys(pattern string, cursor uint64, count int64) (
 		return nil, fmt.Errorf("Redis 客户端未连接")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	if pattern == "" {
 		pattern = "*"
 	}
+
+	isSearchPattern := pattern != "*"
 	targetCount := normalizeRedisScanTargetCount(count)
 	scanStepCount := normalizeRedisScanStepCount(targetCount)
+	maxRounds := redisScanMaxRounds
+	maxDuration := redisScanMaxDuration
+	if isSearchPattern {
+		if targetCount > redisSearchMaxTargetCount {
+			targetCount = redisSearchMaxTargetCount
+		}
+		if scanStepCount > redisSearchMaxStepCount {
+			scanStepCount = redisSearchMaxStepCount
+		}
+		maxRounds = redisSearchMaxRounds
+		maxDuration = redisSearchMaxDuration
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), maxDuration+5*time.Second)
+	defer cancel()
+
 	currentCursor := cursor
 	round := 0
+	scanStartedAt := time.Now()
 
 	keys := make([]string, 0, int(targetCount))
 	seen := make(map[string]struct{}, int(targetCount))
 
 	for len(keys) < int(targetCount) {
+		if time.Since(scanStartedAt) >= maxDuration {
+			break
+		}
+
 		batch, nextCursor, err := r.client.Scan(ctx, currentCursor, pattern, scanStepCount).Result()
 		if err != nil {
 			return nil, err
@@ -143,7 +168,7 @@ func (r *RedisClientImpl) ScanKeys(pattern string, cursor uint64, count int64) (
 
 		currentCursor = nextCursor
 		round++
-		if currentCursor == 0 || round >= redisScanMaxRounds {
+		if currentCursor == 0 || round >= maxRounds {
 			break
 		}
 	}

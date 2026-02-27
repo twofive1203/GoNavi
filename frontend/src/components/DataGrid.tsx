@@ -605,7 +605,6 @@ const DataGrid: React.FC<DataGridProps> = ({
     dataIndex: '',
     title: '',
   });
-  const [cellSetValueInput, setCellSetValueInput] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const pendingScrollToBottomRef = useRef(false);
 
@@ -671,7 +670,6 @@ const DataGrid: React.FC<DataGridProps> = ({
       dataIndex,
       title: titleText,
     });
-    setCellSetValueInput(toFormText(record[dataIndex]));
   }, []);
 
   // Helper to export specific data
@@ -1409,6 +1407,18 @@ const DataGrid: React.FC<DataGridProps> = ({
 
   const hasChanges = addedRows.length > 0 || Object.keys(modifiedRows).length > 0 || deletedRowKeys.size > 0;
 
+  const addedRowKeySet = useMemo(() => {
+      const next = new Set<string>();
+      addedRows.forEach((row) => {
+          const key = row?.[GONAVI_ROW_KEY];
+          if (key === undefined || key === null) return;
+          next.add(rowKeyStr(key));
+      });
+      return next;
+  }, [addedRows, rowKeyStr]);
+
+  const modifiedRowKeySet = useMemo(() => new Set(Object.keys(modifiedRows)), [modifiedRows]);
+
   const handleTableChange = (pag: any, filtersArg: any, sorter: any) => {
       if (isResizingRef.current) return; // Block sort if resizing
       if (sorter.field) {
@@ -1559,12 +1569,6 @@ const DataGrid: React.FC<DataGridProps> = ({
     handleCellSave({ ...cellContextMenu.record, [cellContextMenu.dataIndex]: null });
     setCellContextMenu(prev => ({ ...prev, visible: false }));
   }, [cellContextMenu, handleCellSave]);
-
-  const handleCellSetValue = useCallback(() => {
-    if (!cellContextMenu.record) return;
-    handleCellSave({ ...cellContextMenu.record, [cellContextMenu.dataIndex]: cellSetValueInput });
-    setCellContextMenu(prev => ({ ...prev, visible: false }));
-  }, [cellContextMenu, cellSetValueInput, handleCellSave]);
 
   const handleCellEditorSave = useCallback(() => {
       if (!cellEditorMeta) return;
@@ -1888,6 +1892,11 @@ const DataGrid: React.FC<DataGridProps> = ({
                   {formatCellValue(text)}
               </div>
           ),
+          shouldCellUpdate: (record: Item, prevRecord: Item) => {
+              const rowKeyChanged = record?.[GONAVI_ROW_KEY] !== prevRecord?.[GONAVI_ROW_KEY];
+              if (rowKeyChanged) return true;
+              return !isCellValueEqualForDiff(record?.[key], prevRecord?.[key]);
+          },
           onHeaderCell: (column: any) => ({
               width: column.width,
               onResizeStart: handleResizeStart(key), // Only need start
@@ -2380,6 +2389,31 @@ const DataGrid: React.FC<DataGridProps> = ({
       header: { cell: ResizableTitle }
   }), []); 
 
+  const dataContextValue = useMemo(() => ({
+      selectedRowKeysRef,
+      displayDataRef,
+      handleCopyInsert,
+      handleCopyJson,
+      handleCopyCsv,
+      handleExportSelected,
+      copyToClipboard,
+      tableName,
+      enableRowContextMenu: !canModifyData,
+  }), [handleCopyCsv, handleCopyInsert, handleCopyJson, handleExportSelected, copyToClipboard, tableName, canModifyData]);
+
+  const cellContextMenuValue = useMemo(() => ({
+      showMenu: showCellContextMenu,
+      handleBatchFillToSelected,
+  }), [showCellContextMenu, handleBatchFillToSelected]);
+
+  const rowSelectionConfig = useMemo(() => ({
+      selectedRowKeys,
+      onChange: setSelectedRowKeys,
+      columnWidth: selectionColumnWidth,
+  }), [selectedRowKeys, selectionColumnWidth]);
+
+  const rowPropsFactory = useCallback((record: any) => ({ record } as any), []);
+
   const totalWidth = columns.reduce((sum, col) => sum + (Number(col.width) || 200), 0) + selectionColumnWidth;
   const enableVirtual = mergedDisplayData.length >= 200;
   const tableScrollX = useMemo(() => {
@@ -2779,8 +2813,8 @@ const DataGrid: React.FC<DataGridProps> = ({
 
         {viewMode === 'table' ? (
             <Form component={false} form={form}>
-                <DataContext.Provider value={{ selectedRowKeysRef, displayDataRef, handleCopyInsert, handleCopyJson, handleCopyCsv, handleExportSelected, copyToClipboard, tableName, enableRowContextMenu: !canModifyData }}>
-                    <CellContextMenuContext.Provider value={{ showMenu: showCellContextMenu, handleBatchFillToSelected }}>
+                <DataContext.Provider value={dataContextValue}>
+                    <CellContextMenuContext.Provider value={cellContextMenuValue}>
                             <EditableContext.Provider value={form}>
                                 <Table
                                     components={tableComponents}
@@ -2792,23 +2826,21 @@ const DataGrid: React.FC<DataGridProps> = ({
                                     scroll={{ x: tableScrollX, y: tableHeight }}
                                     sticky={tableStickyConfig}
                                     virtual={enableVirtual}
-                                    loading={loading}
+                                        loading={loading}
                                         rowKey={GONAVI_ROW_KEY}
                                         pagination={false}
                                         onChange={handleTableChange}
                                         bordered
-                                        rowSelection={{
-                                            selectedRowKeys,
-                                            onChange: setSelectedRowKeys,
-                                            columnWidth: selectionColumnWidth,
-                                        }}
+                                        rowSelection={rowSelectionConfig}
                                         rowClassName={(record) => {
                                             const k = record?.[GONAVI_ROW_KEY];
-                                            if (k !== undefined && addedRows.some(r => r?.[GONAVI_ROW_KEY] === k)) return 'row-added';
-                                            if (k !== undefined && (modifiedRows[rowKeyStr(k)] || deletedRowKeys.has(rowKeyStr(k)))) return 'row-modified'; // deleted won't show
+                                            if (k === undefined || k === null) return '';
+                                            const keyStr = rowKeyStr(k);
+                                            if (addedRowKeySet.has(keyStr)) return 'row-added';
+                                            if (modifiedRowKeySet.has(keyStr) || deletedRowKeys.has(keyStr)) return 'row-modified'; // deleted won't show
                                             return '';
                                         }}
-                                        onRow={(record) => ({ record } as any)}
+                                        onRow={rowPropsFactory}
                                     />
                             </EditableContext.Provider>
                     </CellContextMenuContext.Provider>
