@@ -5,6 +5,7 @@ package db
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"GoNavi-Wails/internal/connection"
 )
@@ -115,7 +116,7 @@ func TestTDengineDSN_UsesWebSocketFormat(t *testing.T) {
 	}
 }
 
-func TestClickHouseDSN_EscapesPasswordAndSetsTimeout(t *testing.T) {
+func TestClickHouseOptions_UsesStructuredTimeoutAndAuth(t *testing.T) {
 	c := &ClickHouseDB{}
 	cfg := normalizeClickHouseConfig(connection.ConnectionConfig{
 		Type:     "clickhouse",
@@ -127,17 +128,35 @@ func TestClickHouseDSN_EscapesPasswordAndSetsTimeout(t *testing.T) {
 		Timeout:  15,
 	})
 
-	dsn := c.getDSN(cfg)
-	if strings.Contains(dsn, cfg.Password) {
-		t.Fatalf("dsn 包含原始密码：%s", dsn)
+	opts := c.buildClickHouseOptions(cfg)
+	if opts == nil {
+		t.Fatal("options 为空")
 	}
-	if !strings.Contains(dsn, "p%40ss%3Awo%2Frd") {
-		t.Fatalf("dsn 未正确转义密码：%s", dsn)
+	if len(opts.Addr) != 1 || opts.Addr[0] != "127.0.0.1:9000" {
+		t.Fatalf("addr 不符合预期：%v", opts.Addr)
 	}
-	if !strings.Contains(dsn, "dial_timeout=15s") {
-		t.Fatalf("dsn 缺少 dial_timeout 参数：%s", dsn)
+	if opts.Auth.Username != "default" {
+		t.Fatalf("username 不符合预期：%s", opts.Auth.Username)
 	}
-	if !strings.Contains(dsn, "/analytics") {
-		t.Fatalf("dsn 缺少数据库路径：%s", dsn)
+	if opts.Auth.Password != cfg.Password {
+		t.Fatalf("password 不符合预期：%s", opts.Auth.Password)
+	}
+	if opts.Auth.Database != "analytics" {
+		t.Fatalf("database 不符合预期：%s", opts.Auth.Database)
+	}
+	if opts.DialTimeout != 15*time.Second {
+		t.Fatalf("dial timeout 不符合预期：%s", opts.DialTimeout)
+	}
+	if opts.ReadTimeout != 15*time.Second {
+		t.Fatalf("read timeout 不符合预期：%s", opts.ReadTimeout)
+	}
+	if _, ok := opts.Settings["write_timeout"]; ok {
+		t.Fatalf("options 不应包含 write_timeout 设置：%v", opts.Settings)
+	}
+	if _, ok := opts.Settings["read_timeout"]; ok {
+		t.Fatalf("options 不应通过 settings 传递 read_timeout：%v", opts.Settings)
+	}
+	if _, ok := opts.Settings["dial_timeout"]; ok {
+		t.Fatalf("options 不应通过 settings 传递 dial_timeout：%v", opts.Settings)
 	}
 }

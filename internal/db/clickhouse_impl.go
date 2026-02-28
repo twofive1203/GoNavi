@@ -17,7 +17,7 @@ import (
 	"GoNavi-Wails/internal/ssh"
 	"GoNavi-Wails/internal/utils"
 
-	_ "github.com/ClickHouse/clickhouse-go/v2"
+	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
 )
 
 const (
@@ -100,25 +100,20 @@ func applyClickHouseURI(config connection.ConnectionConfig) connection.Connectio
 	return config
 }
 
-func (c *ClickHouseDB) getDSN(config connection.ConnectionConfig) string {
-	u := &url.URL{
-		Scheme: "clickhouse",
-		Host:   net.JoinHostPort(config.Host, strconv.Itoa(config.Port)),
-		Path:   "/" + strings.TrimPrefix(strings.TrimSpace(config.Database), "/"),
+func (c *ClickHouseDB) buildClickHouseOptions(config connection.ConnectionConfig) *clickhouse.Options {
+	timeout := getConnectTimeout(config)
+	return &clickhouse.Options{
+		Addr: []string{
+			net.JoinHostPort(config.Host, strconv.Itoa(config.Port)),
+		},
+		Auth: clickhouse.Auth{
+			Database: strings.TrimSpace(config.Database),
+			Username: strings.TrimSpace(config.User),
+			Password: config.Password,
+		},
+		DialTimeout: timeout,
+		ReadTimeout: timeout,
 	}
-	if strings.TrimSpace(config.Password) != "" {
-		u.User = url.UserPassword(strings.TrimSpace(config.User), config.Password)
-	} else {
-		u.User = url.User(strings.TrimSpace(config.User))
-	}
-
-	timeoutSeconds := getConnectTimeoutSeconds(config)
-	query := u.Query()
-	query.Set("dial_timeout", fmt.Sprintf("%ds", timeoutSeconds))
-	query.Set("read_timeout", fmt.Sprintf("%ds", timeoutSeconds))
-	query.Set("write_timeout", fmt.Sprintf("%ds", timeoutSeconds))
-	u.RawQuery = query.Encode()
-	return u.String()
 }
 
 func (c *ClickHouseDB) Connect(config connection.ConnectionConfig) error {
@@ -165,11 +160,7 @@ func (c *ClickHouseDB) Connect(config connection.ConnectionConfig) error {
 		logger.Infof("ClickHouse 通过本地端口转发连接：%s -> %s:%d", forwarder.LocalAddr, config.Host, config.Port)
 	}
 
-	dbConn, err := sql.Open("clickhouse", c.getDSN(runConfig))
-	if err != nil {
-		return fmt.Errorf("打开数据库连接失败：%w", err)
-	}
-	c.conn = dbConn
+	c.conn = clickhouse.OpenDB(c.buildClickHouseOptions(runConfig))
 
 	if err := c.Ping(); err != nil {
 		_ = c.Close()
