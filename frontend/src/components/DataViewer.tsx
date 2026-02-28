@@ -2,9 +2,19 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { message } from 'antd';
 import { TabData, ColumnDefinition } from '../types';
 import { useStore } from '../store';
-import { DBQuery, DBGetColumns } from '../../wailsjs/go/app/App';
+import { DBQuery, DBGetColumns, DBQueryIsolated } from '../../wailsjs/go/app/App';
 import DataGrid, { GONAVI_ROW_KEY } from './DataGrid';
 import { buildOrderBySQL, buildWhereSQL, quoteQualifiedIdent, withSortBufferTuningSQL, type FilterCondition } from '../utils/sql';
+
+type ViewerPaginationState = {
+  current: number;
+  pageSize: number;
+  total: number;
+  totalKnown: boolean;
+  totalApprox: boolean;
+  totalCountLoading: boolean;
+  totalCountCancelled: boolean;
+};
 
 const toNonNegativeFiniteNumber = (value: unknown): number | null => {
   if (typeof value === 'number') {
@@ -43,6 +53,61 @@ const parseTotalFromCountRow = (row: any): number | null => {
   return null;
 };
 
+const parseDuckDBApproxTotalRow = (row: any): number | null => {
+  if (!row || typeof row !== 'object') return null;
+  const entries = Object.entries(row as Record<string, unknown>);
+  if (entries.length === 0) return null;
+
+  const preferredKeys = ['approx_total', 'estimated_size', 'estimated_rows', 'row_count', 'count', 'total'];
+  for (const preferred of preferredKeys) {
+    for (const [key, raw] of entries) {
+      if (String(key || '').trim().toLowerCase() !== preferred) continue;
+      const parsed = toNonNegativeFiniteNumber(raw);
+      if (parsed !== null) return parsed;
+    }
+  }
+
+  for (const [key, raw] of entries) {
+    const normalized = String(key || '').trim().toLowerCase();
+    if (normalized.includes('estimate') || normalized.includes('row') || normalized.includes('count') || normalized.includes('total')) {
+      const parsed = toNonNegativeFiniteNumber(raw);
+      if (parsed !== null) return parsed;
+    }
+  }
+  return null;
+};
+
+const normalizeDuckDBIdentifier = (raw: string): string => {
+  const text = String(raw || '').trim();
+  if (text.length >= 2) {
+    const first = text[0];
+    const last = text[text.length - 1];
+    if ((first === '"' && last === '"') || (first === '`' && last === '`')) {
+      return text.slice(1, -1).trim();
+    }
+  }
+  return text;
+};
+
+const resolveDuckDBSchemaAndTable = (dbName: string, tableName: string) => {
+  const rawTable = String(tableName || '').trim();
+  if (!rawTable) return { schemaName: 'main', pureTableName: '' };
+
+  const parts = rawTable.split('.');
+  if (parts.length >= 2) {
+    const pureTableName = normalizeDuckDBIdentifier(parts[parts.length - 1]);
+    const schemaName = normalizeDuckDBIdentifier(parts[parts.length - 2]);
+    if (schemaName && pureTableName) {
+      return { schemaName, pureTableName };
+    }
+  }
+
+  const fallbackSchema = normalizeDuckDBIdentifier(String(dbName || '').trim()) || 'main';
+  return { schemaName: fallbackSchema, pureTableName: normalizeDuckDBIdentifier(rawTable) };
+};
+
+const escapeSQLLiteral = (value: string): string => String(value || '').replace(/'/g, "''");
+
 const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
   const [data, setData] = useState<any[]>([]);
   const [columnNames, setColumnNames] = useState<string[]>([]);
@@ -53,14 +118,26 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
   const fetchSeqRef = useRef(0);
   const countSeqRef = useRef(0);
   const countKeyRef = useRef<string>('');
+  const duckdbApproxSeqRef = useRef(0);
+  const duckdbApproxKeyRef = useRef<string>('');
+  const manualCountSeqRef = useRef(0);
+  const manualCountKeyRef = useRef<string>('');
   const pkSeqRef = useRef(0);
   const pkKeyRef = useRef<string>('');
+  const latestConfigRef = useRef<any>(null);
+  const latestDbTypeRef = useRef<string>('');
+  const latestDbNameRef = useRef<string>('');
+  const latestCountSqlRef = useRef<string>('');
+  const latestCountKeyRef = useRef<string>('');
 
-  const [pagination, setPagination] = useState({
+  const [pagination, setPagination] = useState<ViewerPaginationState>({
       current: 1,
       pageSize: 100,
       total: 0,
-      totalKnown: false
+      totalKnown: false,
+      totalApprox: false,
+      totalCountLoading: false,
+      totalCountCancelled: false,
   });
 
   const [sortInfo, setSortInfo] = useState<{ columnKey: string, order: string } | null>(null);
@@ -70,12 +147,105 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
   const currentConnType = (connections.find(c => c.id === tab.connectionId)?.config?.type || '').toLowerCase();
   const forceReadOnly = currentConnType === 'tdengine' || currentConnType === 'clickhouse';
 
+  const runIsolatedQuery = useCallback(async (queryConfig: any, dbName: string, sql: string) => {
+    return DBQueryIsolated(queryConfig as any, dbName, sql);
+  }, []);
+
   useEffect(() => {
     setPkColumns([]);
     pkKeyRef.current = '';
     countKeyRef.current = '';
-    setPagination(prev => ({ ...prev, current: 1, total: 0, totalKnown: false }));
+    duckdbApproxKeyRef.current = '';
+    manualCountKeyRef.current = '';
+    latestConfigRef.current = null;
+    latestDbTypeRef.current = '';
+    latestDbNameRef.current = '';
+    latestCountSqlRef.current = '';
+    latestCountKeyRef.current = '';
+    setPagination(prev => ({
+      ...prev,
+      current: 1,
+      total: 0,
+      totalKnown: false,
+      totalApprox: false,
+      totalCountLoading: false,
+      totalCountCancelled: false,
+    }));
   }, [tab.connectionId, tab.dbName, tab.tableName]);
+
+  const handleDuckDBManualCount = useCallback(async () => {
+    if (latestDbTypeRef.current !== 'duckdb') {
+      return;
+    }
+    const config = latestConfigRef.current;
+    const dbName = latestDbNameRef.current;
+    const countSql = latestCountSqlRef.current;
+    const countKey = latestCountKeyRef.current;
+
+    if (!config || !countSql || !countKey) {
+      message.warning('当前结果集尚未就绪，请先执行一次加载');
+      return;
+    }
+
+    manualCountKeyRef.current = countKey;
+    const countSeq = ++manualCountSeqRef.current;
+    const countStart = Date.now();
+    setPagination(prev => ({ ...prev, totalCountLoading: true, totalCountCancelled: false }));
+    const countConfig: any = { ...(config as any), timeout: 120 };
+
+    try {
+      const resCount = await runIsolatedQuery(countConfig, dbName, countSql);
+      const countDuration = Date.now() - countStart;
+      addSqlLog({
+        id: `log-${Date.now()}-duckdb-manual-count`,
+        timestamp: Date.now(),
+        sql: countSql,
+        status: resCount?.success ? 'success' : 'error',
+        duration: countDuration,
+        message: resCount?.success ? '' : String(resCount?.message || '统计失败'),
+        dbName
+      });
+
+      if (manualCountSeqRef.current !== countSeq) return;
+      if (manualCountKeyRef.current !== countKey) return;
+
+      if (!resCount?.success) {
+        setPagination(prev => ({ ...prev, totalCountLoading: false }));
+        message.error(String(resCount?.message || '统计总数失败'));
+        return;
+      }
+      if (!Array.isArray(resCount.data) || resCount.data.length === 0) {
+        setPagination(prev => ({ ...prev, totalCountLoading: false }));
+        return;
+      }
+
+      const total = parseTotalFromCountRow(resCount.data[0]);
+      if (total === null) {
+        setPagination(prev => ({ ...prev, totalCountLoading: false }));
+        message.error('统计结果解析失败');
+        return;
+      }
+
+      setPagination(prev => ({
+        ...prev,
+        total,
+        totalKnown: true,
+        totalApprox: false,
+        totalCountLoading: false,
+        totalCountCancelled: false,
+      }));
+    } catch (e: any) {
+      if (manualCountSeqRef.current !== countSeq) return;
+      if (manualCountKeyRef.current !== countKey) return;
+      setPagination(prev => ({ ...prev, totalCountLoading: false }));
+      message.error(`统计总数失败: ${String(e?.message || e)}`);
+    }
+  }, [addSqlLog, runIsolatedQuery]);
+
+  const handleDuckDBCancelManualCount = useCallback(() => {
+    manualCountSeqRef.current++;
+    setPagination(prev => ({ ...prev, totalCountLoading: false, totalCountCancelled: true }));
+  }, []);
 
   const fetchData = useCallback(async (page = pagination.current, size = pagination.pageSize) => {
     const seq = ++fetchSeqRef.current;
@@ -197,10 +367,24 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
             const isDuckDB = dbTypeLower === 'duckdb';
             const minExpectedTotal = hasMore ? offset + resultData.length + 1 : offset + resultData.length;
             if (derivedTotalKnown) countKeyRef.current = countKey;
+            latestConfigRef.current = config;
+            latestDbTypeRef.current = dbTypeLower;
+            latestDbNameRef.current = dbName;
+            latestCountSqlRef.current = countSql;
+            latestCountKeyRef.current = countKey;
 
             setPagination(prev => {
                 if (derivedTotalKnown) {
-                    return { ...prev, current: page, pageSize: size, total: derivedTotal, totalKnown: true };
+                    return {
+                        ...prev,
+                        current: page,
+                        pageSize: size,
+                        total: derivedTotal,
+                        totalKnown: true,
+                        totalApprox: false,
+                        totalCountLoading: false,
+                        totalCountCancelled: false,
+                    };
                 }
                 if (prev.totalKnown && countKeyRef.current === countKey) {
                     if (!isDuckDB) {
@@ -212,16 +396,38 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
                         return { ...prev, current: page, pageSize: size };
                     }
                 }
-                return { ...prev, current: page, pageSize: size, total: derivedTotal, totalKnown: false };
+                const keepManualCounting = prev.totalCountLoading && manualCountKeyRef.current === countKey;
+                if (isDuckDB && prev.totalApprox && duckdbApproxKeyRef.current === countKey && Number.isFinite(prev.total) && prev.total >= minExpectedTotal) {
+                    return {
+                        ...prev,
+                        current: page,
+                        pageSize: size,
+                        totalKnown: false,
+                        totalApprox: true,
+                        totalCountLoading: keepManualCounting,
+                        totalCountCancelled: false,
+                    };
+                }
+                return {
+                    ...prev,
+                    current: page,
+                    pageSize: size,
+                    total: derivedTotal,
+                    totalKnown: false,
+                    totalApprox: false,
+                    totalCountLoading: keepManualCounting,
+                    totalCountCancelled: keepManualCounting ? false : prev.totalCountCancelled,
+                };
             });
 
-            if (!derivedTotalKnown) {
+            const shouldRunAsyncCount = !derivedTotalKnown && !isDuckDB;
+            if (shouldRunAsyncCount) {
                 if (countKeyRef.current !== countKey) {
                     countKeyRef.current = countKey;
                     const countSeq = ++countSeqRef.current;
                     const countStart = Date.now();
                     // 大表 COUNT(*) 可能非常慢，且在部分运行时环境下会影响后续操作响应；
-                    // 这里为统计请求设置更短的超时，避免“后台统计”长期占用资源。
+                    // DuckDB 大文件场景下该统计会显著拖慢翻页，已禁用后台 COUNT。
                     const countConfig: any = { ...(config as any), timeout: 5 };
 
                     DBQuery(countConfig, dbName, countSql)
@@ -245,17 +451,20 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
                             if (!Array.isArray(resCount.data) || resCount.data.length === 0) return;
 
                             let total: number | null = null;
-                            if (dbTypeLower === 'duckdb') {
-                                total = parseTotalFromCountRow(resCount.data[0]);
-                            } else {
-                                const parsed = Number(resCount.data[0]?.['total']);
-                                if (Number.isFinite(parsed) && parsed >= 0) {
-                                    total = parsed;
-                                }
+                            const parsed = Number(resCount.data[0]?.['total']);
+                            if (Number.isFinite(parsed) && parsed >= 0) {
+                                total = parsed;
                             }
                             if (total === null) return;
 
-                            setPagination(prev => ({ ...prev, total, totalKnown: true }));
+                            setPagination(prev => ({
+                                ...prev,
+                                total,
+                                totalKnown: true,
+                                totalApprox: false,
+                                totalCountLoading: false,
+                                totalCountCancelled: false,
+                            }));
                         })
                         .catch(() => {
                             if (countSeqRef.current !== countSeq) return;
@@ -263,6 +472,50 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
                             // 统计失败不影响主流程，不弹窗；可在日志里查看。
                         });
                 }
+            }
+
+            if (isDuckDB && !derivedTotalKnown && whereSQL.trim() === '' && duckdbApproxKeyRef.current !== countKey) {
+                duckdbApproxKeyRef.current = countKey;
+                const approxSeq = ++duckdbApproxSeqRef.current;
+                const { schemaName, pureTableName } = resolveDuckDBSchemaAndTable(dbName, tableName);
+                const escapedSchema = escapeSQLLiteral(schemaName);
+                const escapedTable = escapeSQLLiteral(pureTableName);
+                const approxConfig: any = { ...(config as any), timeout: 3 };
+                const approxSqlCandidates = [
+                    `SELECT estimated_size AS approx_total FROM duckdb_tables() WHERE schema_name='${escapedSchema}' AND table_name='${escapedTable}' LIMIT 1`,
+                    `SELECT estimated_size AS approx_total FROM duckdb_tables() WHERE table_name='${escapedTable}' ORDER BY CASE WHEN schema_name='${escapedSchema}' THEN 0 ELSE 1 END LIMIT 1`,
+                ];
+
+                (async () => {
+                    for (const approxSql of approxSqlCandidates) {
+                        try {
+                            const approxRes = await runIsolatedQuery(approxConfig, dbName, approxSql);
+                            if (duckdbApproxSeqRef.current !== approxSeq) return;
+                            if (countKeyRef.current !== countKey) return;
+                            if (!approxRes?.success || !Array.isArray(approxRes.data) || approxRes.data.length === 0) continue;
+
+                            const approxTotal = parseDuckDBApproxTotalRow(approxRes.data[0]);
+                            if (approxTotal === null) continue;
+                            if (!Number.isFinite(approxTotal) || approxTotal < minExpectedTotal) continue;
+
+                            setPagination(prev => {
+                                if (countKeyRef.current !== countKey) return prev;
+                                if (prev.totalKnown) return prev;
+                                return {
+                                    ...prev,
+                                    total: approxTotal,
+                                    totalKnown: false,
+                                    totalApprox: true,
+                                    totalCountCancelled: false,
+                                };
+                            });
+                            return;
+                        } catch {
+                            if (duckdbApproxSeqRef.current !== approxSeq) return;
+                            if (countKeyRef.current !== countKey) return;
+                        }
+                    }
+                })();
             }
         } else {
             message.error(String(resData.message || '查询失败'));
@@ -281,7 +534,7 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
         });
     }
     if (fetchSeqRef.current === seq) setLoading(false);
-  }, [connections, tab, sortInfo, filterConditions, pkColumns]); 
+  }, [connections, tab, sortInfo, filterConditions, pkColumns, runIsolatedQuery]); 
   // 依赖 pkColumns：在无手动排序时可回退到主键稳定排序。
   // 主键信息只会在首次加载后更新一次，避免循环查询。
 
@@ -320,6 +573,8 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
           onSort={handleSort}
           onPageChange={handlePageChange}
           pagination={pagination}
+          onRequestTotalCount={currentConnType === 'duckdb' ? handleDuckDBManualCount : undefined}
+          onCancelTotalCount={currentConnType === 'duckdb' ? handleDuckDBCancelManualCount : undefined}
           showFilter={showFilter}
           onToggleFilter={handleToggleFilter}
           onApplyFilter={handleApplyFilter}

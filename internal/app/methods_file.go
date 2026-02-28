@@ -1291,7 +1291,7 @@ func dumpTableSQL(
 				createSQL = ddl
 			}
 		} else {
-			ddl, err := dbInst.GetCreateStatement(schemaName, pureTableName)
+			ddl, err := resolveCreateStatementWithFallback(dbInst, config, dbName, tableName)
 			if err != nil {
 				if viewDDL, ok := tryGetViewCreateStatement(dbInst, config, dbName, schemaName, pureTableName); ok {
 					createSQL = viewDDL

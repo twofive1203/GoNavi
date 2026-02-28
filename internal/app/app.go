@@ -207,6 +207,32 @@ func (a *App) getDatabase(config connection.ConnectionConfig) (db.Database, erro
 	return a.getDatabaseWithPing(config, false)
 }
 
+func (a *App) openDatabaseIsolated(config connection.ConnectionConfig) (db.Database, error) {
+	effectiveConfig := applyGlobalProxyToConnection(config)
+	if supported, reason := db.DriverRuntimeSupportStatus(effectiveConfig.Type); !supported {
+		if strings.TrimSpace(reason) == "" {
+			reason = fmt.Sprintf("%s 驱动未启用，请先在驱动管理中安装启用", strings.TrimSpace(effectiveConfig.Type))
+		}
+		return nil, withLogHint{err: fmt.Errorf("%s", reason), logPath: logger.Path()}
+	}
+
+	dbInst, err := db.NewDatabase(effectiveConfig.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	connectConfig, proxyErr := resolveDialConfigWithProxy(effectiveConfig)
+	if proxyErr != nil {
+		_ = dbInst.Close()
+		return nil, wrapConnectError(effectiveConfig, proxyErr)
+	}
+	if err := dbInst.Connect(connectConfig); err != nil {
+		_ = dbInst.Close()
+		return nil, wrapConnectError(effectiveConfig, err)
+	}
+	return dbInst, nil
+}
+
 func (a *App) getDatabaseWithPing(config connection.ConnectionConfig, forcePing bool) (db.Database, error) {
 	effectiveConfig := applyGlobalProxyToConnection(config)
 

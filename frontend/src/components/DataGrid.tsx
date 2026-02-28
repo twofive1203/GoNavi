@@ -509,7 +509,17 @@ interface DataGridProps {
     onReload?: () => void;
     onSort?: (field: string, order: string) => void;
     onPageChange?: (page: number, size: number) => void;
-    pagination?: { current: number, pageSize: number, total: number, totalKnown?: boolean };
+    pagination?: {
+        current: number,
+        pageSize: number,
+        total: number,
+        totalKnown?: boolean,
+        totalApprox?: boolean,
+        totalCountLoading?: boolean,
+        totalCountCancelled?: boolean,
+    };
+    onRequestTotalCount?: () => void;
+    onCancelTotalCount?: () => void;
     sortInfoExternal?: { columnKey: string, order: string } | null;
     // Filtering
     showFilter?: boolean;
@@ -534,7 +544,7 @@ type ColumnMeta = {
 
 const DataGrid: React.FC<DataGridProps> = ({ 
     data, columnNames, loading, tableName, dbName, connectionId, pkColumns = [], readOnly = false,
-    onReload, onSort, onPageChange, pagination, sortInfoExternal, showFilter, onToggleFilter, onApplyFilter
+    onReload, onSort, onPageChange, pagination, onRequestTotalCount, onCancelTotalCount, sortInfoExternal, showFilter, onToggleFilter, onApplyFilter
 }) => {
   const connections = useStore(state => state.connections);
   const addSqlLog = useStore(state => state.addSqlLog);
@@ -2527,6 +2537,26 @@ const DataGrid: React.FC<DataGridProps> = ({
                </>
            )}
 
+           {isDuckDBConnection && onRequestTotalCount && (
+               <>
+                   <div style={{ width: 1, background: '#eee', height: 20, margin: '0 8px' }} />
+                   <Tooltip title={pagination?.totalCountLoading ? '取消本次精确总数统计（不会影响当前浏览）' : '按当前筛选统计精确总数'}>
+                       <Button
+                           icon={pagination?.totalCountLoading ? <CloseOutlined /> : <VerticalAlignBottomOutlined />}
+                           onClick={() => {
+                               if (pagination?.totalCountLoading) {
+                                   if (onCancelTotalCount) onCancelTotalCount();
+                                   return;
+                               }
+                               onRequestTotalCount();
+                           }}
+                       >
+                           {pagination?.totalCountLoading ? '取消统计' : '统计总数'}
+                       </Button>
+                   </Tooltip>
+               </>
+           )}
+
            <div style={{ marginLeft: 'auto' }} />
 	           <div style={{ flexShrink: 0 }}>
 	               <Popover
@@ -3091,12 +3121,20 @@ const DataGrid: React.FC<DataGridProps> = ({
                    pageSize={pagination.pageSize}
                    total={pagination.total}
                    showTotal={(total, range) => {
+                       const hasValidRange = Array.isArray(range) && range[0] > 0 && range[1] >= range[0];
+                       const currentCount = hasValidRange ? Math.max(0, range[1] - range[0] + 1) : 0;
+                       if (pagination.totalKnown === false) {
+                           if (isDuckDBConnection) {
+                               if (pagination.totalCountLoading) return `当前 ${currentCount} 条 / 正在统计精确总数...`;
+                               if (pagination.totalApprox && Number.isFinite(total) && total > 0) return `当前 ${currentCount} 条 / 约 ${total} 条`;
+                               if (pagination.totalCountCancelled) return `当前 ${currentCount} 条 / 已取消统计`;
+                               return `当前 ${currentCount} 条 / 总数未统计`;
+                           }
+                           return `当前 ${currentCount} 条 / 正在统计总数...`;
+                       }
                        if (isDuckDBConnection && (!Number.isFinite(total) || total <= 0)) {
-                           if (pagination.totalKnown === false) return '当前 0 条 / 正在统计总数...';
                            return '当前 0 条 / 共 0 条';
                        }
-                       const currentCount = Math.max(0, range[1] - range[0] + 1);
-                       if (pagination.totalKnown === false) return `当前 ${currentCount} 条 / 正在统计总数...`;
                        return `当前 ${currentCount} 条 / 共 ${total} 条`;
                    }}
                    showSizeChanger

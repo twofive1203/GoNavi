@@ -34,6 +34,8 @@ export function DBGetTriggers(arg1:connection.ConnectionConfig,arg2:string,arg3:
 
 export function DBQuery(arg1:connection.ConnectionConfig,arg2:string,arg3:string):Promise<connection.QueryResult>;
 
+export function DBQueryIsolated(arg1:connection.ConnectionConfig,arg2:string,arg3:string):Promise<connection.QueryResult>;
+
 export function DBShowCreateTable(arg1:connection.ConnectionConfig,arg2:string,arg3:string):Promise<connection.QueryResult>;
 
 export function DataSync(arg1:sync.SyncConfig):Promise<sync.SyncResult>;

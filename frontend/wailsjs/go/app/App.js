@@ -62,6 +62,10 @@ export function DBQuery(arg1, arg2, arg3) {
   return window['go']['app']['App']['DBQuery'](arg1, arg2, arg3);
 }
 
+export function DBQueryIsolated(arg1, arg2, arg3) {
+  return window['go']['app']['App']['DBQueryIsolated'](arg1, arg2, arg3);
+}
+
 export function DBShowCreateTable(arg1, arg2, arg3) {
   return window['go']['app']['App']['DBShowCreateTable'](arg1, arg2, arg3);
 }

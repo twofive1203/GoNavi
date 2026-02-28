@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"GoNavi-Wails/internal/connection"
+	"GoNavi-Wails/internal/db"
 	"GoNavi-Wails/internal/logger"
 	"GoNavi-Wails/internal/utils"
 )
@@ -112,15 +113,38 @@ func resolveDDLDBType(config connection.ConnectionConfig) string {
 
 	driver := strings.ToLower(strings.TrimSpace(config.Driver))
 	switch driver {
-	case "postgresql":
+	case "postgresql", "postgres", "pg", "pq", "pgx":
 		return "postgres"
-	case "dm":
+	case "dm", "dameng", "dm8":
 		return "dameng"
-	case "sqlite3":
+	case "sqlite3", "sqlite":
 		return "sqlite"
 	case "sphinxql":
 		return "sphinx"
 	case "diros", "doris":
+		return "diros"
+	case "kingbase", "kingbase8", "kingbasees", "kingbasev8":
+		return "kingbase"
+	case "highgo":
+		return "highgo"
+	case "vastbase":
+		return "vastbase"
+	}
+
+	switch {
+	case strings.Contains(driver, "postgres"):
+		return "postgres"
+	case strings.Contains(driver, "kingbase"):
+		return "kingbase"
+	case strings.Contains(driver, "highgo"):
+		return "highgo"
+	case strings.Contains(driver, "vastbase"):
+		return "vastbase"
+	case strings.Contains(driver, "sqlite"):
+		return "sqlite"
+	case strings.Contains(driver, "sphinx"):
+		return "sphinx"
+	case strings.Contains(driver, "diros"), strings.Contains(driver, "doris"):
 		return "diros"
 	default:
 		return driver
@@ -406,6 +430,66 @@ func (a *App) DBQuery(config connection.ConnectionConfig, dbName string, query s
 	}
 }
 
+func (a *App) DBQueryIsolated(config connection.ConnectionConfig, dbName string, query string) connection.QueryResult {
+	runConfig := normalizeRunConfig(config, dbName)
+
+	dbInst, err := a.openDatabaseIsolated(runConfig)
+	if err != nil {
+		logger.Error(err, "DBQueryIsolated 获取连接失败：%s", formatConnSummary(runConfig))
+		return connection.QueryResult{Success: false, Message: err.Error()}
+	}
+	defer func() {
+		if closeErr := dbInst.Close(); closeErr != nil {
+			logger.Error(closeErr, "DBQueryIsolated 关闭临时连接失败：%s", formatConnSummary(runConfig))
+		}
+	}()
+
+	query = sanitizeSQLForPgLike(runConfig.Type, query)
+	timeoutSeconds := runConfig.Timeout
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 30
+	}
+	ctx, cancel := utils.ContextWithTimeout(time.Duration(timeoutSeconds) * time.Second)
+	defer cancel()
+
+	lowerQuery := strings.TrimSpace(strings.ToLower(query))
+	isReadQuery := strings.HasPrefix(lowerQuery, "select") || strings.HasPrefix(lowerQuery, "show") || strings.HasPrefix(lowerQuery, "describe") || strings.HasPrefix(lowerQuery, "explain")
+	if !isReadQuery && strings.ToLower(strings.TrimSpace(runConfig.Type)) == "mongodb" && strings.HasPrefix(strings.TrimSpace(query), "{") {
+		isReadQuery = true
+	}
+
+	if isReadQuery {
+		var data []map[string]interface{}
+		var columns []string
+		if q, ok := dbInst.(interface {
+			QueryContext(context.Context, string) ([]map[string]interface{}, []string, error)
+		}); ok {
+			data, columns, err = q.QueryContext(ctx, query)
+		} else {
+			data, columns, err = dbInst.Query(query)
+		}
+		if err != nil {
+			logger.Error(err, "DBQueryIsolated 查询失败：%s SQL片段=%q", formatConnSummary(runConfig), sqlSnippet(query))
+			return connection.QueryResult{Success: false, Message: err.Error()}
+		}
+		return connection.QueryResult{Success: true, Data: data, Fields: columns}
+	}
+
+	var affected int64
+	if e, ok := dbInst.(interface {
+		ExecContext(context.Context, string) (int64, error)
+	}); ok {
+		affected, err = e.ExecContext(ctx, query)
+	} else {
+		affected, err = dbInst.Exec(query)
+	}
+	if err != nil {
+		logger.Error(err, "DBQueryIsolated 执行失败：%s SQL片段=%q", formatConnSummary(runConfig), sqlSnippet(query))
+		return connection.QueryResult{Success: false, Message: err.Error()}
+	}
+	return connection.QueryResult{Success: true, Data: map[string]int64{"affectedRows": affected}}
+}
+
 func sqlSnippet(query string) string {
 	q := strings.TrimSpace(query)
 	const max = 200
@@ -460,8 +544,8 @@ func (a *App) DBGetTables(config connection.ConnectionConfig, dbName string) con
 }
 
 func (a *App) DBShowCreateTable(config connection.ConnectionConfig, dbName string, tableName string) connection.QueryResult {
-	runConfig := normalizeRunConfig(config, dbName)
 	dbType := resolveDDLDBType(config)
+	runConfig := buildRunConfigForDDL(config, dbType, dbName)
 
 	dbInst, err := a.getDatabase(runConfig)
 	if err != nil {
@@ -469,33 +553,63 @@ func (a *App) DBShowCreateTable(config connection.ConnectionConfig, dbName strin
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	schemaName, pureTableName := normalizeSchemaAndTable(config, dbName, tableName)
-	sqlStr, err := dbInst.GetCreateStatement(schemaName, pureTableName)
+	sqlStr, err := resolveCreateStatementWithFallback(dbInst, config, dbName, tableName)
 	if err != nil {
 		logger.Error(err, "DBShowCreateTable 获取建表语句失败：%s 表=%s", formatConnSummary(runConfig), tableName)
 		return connection.QueryResult{Success: false, Message: err.Error()}
-	}
-	if shouldFallbackCreateStatement(dbType, sqlStr) {
-		columns, colErr := dbInst.GetColumns(schemaName, pureTableName)
-		if colErr != nil {
-			logger.Error(colErr, "DBShowCreateTable 兜底加载字段失败：%s 表=%s", formatConnSummary(runConfig), tableName)
-			return connection.QueryResult{Success: false, Message: colErr.Error()}
-		}
-		fallbackDDL, buildErr := buildFallbackCreateStatement(dbType, schemaName, pureTableName, columns)
-		if buildErr != nil {
-			logger.Error(buildErr, "DBShowCreateTable 兜底生成 DDL 失败：%s 表=%s", formatConnSummary(runConfig), tableName)
-			return connection.QueryResult{Success: false, Message: buildErr.Error()}
-		}
-		sqlStr = fallbackDDL
 	}
 
 	return connection.QueryResult{Success: true, Data: sqlStr}
 }
 
-func shouldFallbackCreateStatement(dbType string, ddl string) bool {
+func resolveCreateStatementWithFallback(dbInst db.Database, config connection.ConnectionConfig, dbName string, tableName string) (string, error) {
+	dbType := resolveDDLDBType(config)
+	schemaName, pureTableName := normalizeSchemaAndTableByType(dbType, dbName, tableName)
+	if pureTableName == "" {
+		return "", fmt.Errorf("表名不能为空")
+	}
+
+	sqlStr, sourceErr := dbInst.GetCreateStatement(schemaName, pureTableName)
+	if sourceErr == nil && !shouldFallbackCreateStatement(dbType, sqlStr) {
+		return sqlStr, nil
+	}
+
+	if !supportsCreateStatementFallback(dbType) {
+		if sourceErr != nil {
+			return "", sourceErr
+		}
+		return sqlStr, nil
+	}
+
+	columns, colErr := dbInst.GetColumns(schemaName, pureTableName)
+	if colErr != nil {
+		if sourceErr != nil {
+			return "", sourceErr
+		}
+		return "", colErr
+	}
+
+	fallbackDDL, buildErr := buildFallbackCreateStatement(dbType, schemaName, pureTableName, columns)
+	if buildErr != nil {
+		if sourceErr != nil {
+			return "", sourceErr
+		}
+		return "", buildErr
+	}
+	return fallbackDDL, nil
+}
+
+func supportsCreateStatementFallback(dbType string) bool {
 	switch dbType {
 	case "postgres", "kingbase", "highgo", "vastbase":
+		return true
 	default:
+		return false
+	}
+}
+
+func shouldFallbackCreateStatement(dbType string, ddl string) bool {
+	if !supportsCreateStatementFallback(dbType) {
 		return false
 	}
 
