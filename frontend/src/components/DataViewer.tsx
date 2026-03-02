@@ -5,6 +5,7 @@ import { useStore } from '../store';
 import { DBQuery, DBGetColumns } from '../../wailsjs/go/app/App';
 import DataGrid, { GONAVI_ROW_KEY } from './DataGrid';
 import { buildOrderBySQL, buildWhereSQL, quoteIdentPart, quoteQualifiedIdent, withSortBufferTuningSQL, type FilterCondition } from '../utils/sql';
+import { getDataSourceCapabilities } from '../utils/dataSourceCapabilities';
 
 type ViewerPaginationState = {
   current: number;
@@ -172,8 +173,10 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
   const [showFilter, setShowFilter] = useState(false);
   const [filterConditions, setFilterConditions] = useState<FilterCondition[]>([]);
   const duckdbSafeSelectCacheRef = useRef<Record<string, string>>({});
-  const currentConnType = (connections.find(c => c.id === tab.connectionId)?.config?.type || '').toLowerCase();
-  const forceReadOnly = currentConnType === 'tdengine' || currentConnType === 'clickhouse';
+  const currentConnConfig = connections.find(c => c.id === tab.connectionId)?.config;
+  const currentConnCaps = getDataSourceCapabilities(currentConnConfig);
+  const currentConnType = currentConnCaps.type;
+  const forceReadOnly = currentConnCaps.forceReadOnlyQueryResult;
 
   useEffect(() => {
     setPkColumns([]);
@@ -673,6 +676,7 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
           columnNames={columnNames}
           loading={loading}
           tableName={tab.tableName}
+          exportScope="table"
           dbName={tab.dbName}
           connectionId={tab.connectionId}
           pkColumns={pkColumns}

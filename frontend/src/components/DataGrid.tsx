@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import 'react-resizable/css/styles.css';
 import { buildOrderBySQL, buildWhereSQL, escapeLiteral, quoteIdentPart, quoteQualifiedIdent, withSortBufferTuningSQL, type FilterCondition } from '../utils/sql';
 import { isMacLikePlatform, normalizeOpacityForPlatform } from '../utils/appearance';
+import { getDataSourceCapabilities } from '../utils/dataSourceCapabilities';
 
 // --- Error Boundary ---
 interface DataGridErrorBoundaryState {
@@ -302,6 +303,7 @@ const DataContext = React.createContext<{
     copyToClipboard: (t: string) => void;
     tableName?: string;
     enableRowContextMenu: boolean;
+    supportsCopyInsert: boolean;
 } | null>(null);
 
 interface Item {
@@ -444,7 +446,7 @@ const ContextMenuRow = React.memo(({ children, record, ...props }: any) => {
     
     if (!record || !context) return <tr {...props}>{children}</tr>;
 
-    const { selectedRowKeysRef, displayDataRef, handleCopyInsert, handleCopyJson, handleCopyCsv, handleExportSelected, copyToClipboard, enableRowContextMenu } = context;
+    const { selectedRowKeysRef, displayDataRef, handleCopyInsert, handleCopyJson, handleCopyCsv, handleExportSelected, copyToClipboard, enableRowContextMenu, supportsCopyInsert } = context;
 
     if (!enableRowContextMenu) {
         return <tr {...props}>{children}</tr>;
@@ -460,12 +462,12 @@ const ContextMenuRow = React.memo(({ children, record, ...props }: any) => {
     };
 
     const menuItems: MenuProps['items'] = [
-        { 
-            key: 'insert', 
-            label: `复制为 INSERT`, 
-            icon: <ConsoleSqlOutlined />, 
-            onClick: () => handleCopyInsert(record) 
-        },
+        ...(supportsCopyInsert ? [{
+            key: 'insert',
+            label: '复制为 INSERT',
+            icon: <ConsoleSqlOutlined />,
+            onClick: () => handleCopyInsert(record),
+        }] : []),
         { key: 'json', label: '复制为 JSON', icon: <FileTextOutlined />, onClick: () => handleCopyJson(record) },
         { key: 'csv', label: '复制为 CSV', icon: <FileTextOutlined />, onClick: () => handleCopyCsv(record) },
         { key: 'copy', label: '复制为 Markdown', icon: <CopyOutlined />, onClick: () => { 
@@ -502,6 +504,8 @@ interface DataGridProps {
     columnNames: string[];
     loading: boolean;
     tableName?: string;
+    exportScope?: 'table' | 'queryResult';
+    resultSql?: string;
     dbName?: string;
     connectionId?: string;
     pkColumns?: string[];
@@ -543,7 +547,7 @@ type ColumnMeta = {
 };
 
 const DataGrid: React.FC<DataGridProps> = ({ 
-    data, columnNames, loading, tableName, dbName, connectionId, pkColumns = [], readOnly = false,
+    data, columnNames, loading, tableName, exportScope = 'table', resultSql, dbName, connectionId, pkColumns = [], readOnly = false,
     onReload, onSort, onPageChange, pagination, onRequestTotalCount, onCancelTotalCount, sortInfoExternal, showFilter, onToggleFilter, onApplyFilter
 }) => {
   const connections = useStore(state => state.connections);
@@ -559,8 +563,14 @@ const DataGrid: React.FC<DataGridProps> = ({
   const showColumnComment = queryOptions?.showColumnComment !== false;
   const showColumnType = queryOptions?.showColumnType !== false;
   const selectionColumnWidth = 46;
-  const connTypeLower = String(connections.find(c => c.id === connectionId)?.config?.type || '').trim().toLowerCase();
-  const isDuckDBConnection = connTypeLower === 'duckdb';
+  const currentConnConfig = connections.find(c => c.id === connectionId)?.config;
+  const dataSourceCaps = getDataSourceCapabilities(currentConnConfig);
+  const isDuckDBConnection = dataSourceCaps.type === 'duckdb';
+  const supportsCopyInsert = dataSourceCaps.supportsCopyInsert;
+  const supportsSqlQueryExport = dataSourceCaps.supportsSqlQueryExport;
+  const isQueryResultExport = exportScope === 'queryResult';
+  const canImport = exportScope === 'table' && !!tableName;
+  const canExport = !!connectionId && (isQueryResultExport || !!tableName);
 
   // Background Helper
   const getBg = (darkHex: string) => {
@@ -687,11 +697,20 @@ const DataGrid: React.FC<DataGridProps> = ({
   // Helper to export specific data
   const exportData = async (rows: any[], format: string) => {
       const hide = message.loading(`正在导出 ${rows.length} 条数据...`, 0);
-      const cleanRows = rows.map(({ [GONAVI_ROW_KEY]: _rowKey, ...rest }) => rest);
-      // Pass tableName (or 'export') as default filename
-      const res = await ExportData(cleanRows, columnNames, tableName || 'export', format);
-      hide();
-      if (res.success) { message.success("导出成功"); } else if (res.message !== "Cancelled") { message.error("导出失败: " + res.message); }
+      try {
+          const cleanRows = rows.map(({ [GONAVI_ROW_KEY]: _rowKey, ...rest }) => rest);
+          // Pass tableName (or 'export') as default filename
+          const res = await ExportData(cleanRows, columnNames, tableName || 'export', format);
+          if (res.success) {
+              message.success("导出成功");
+          } else if (res.message !== "Cancelled") {
+              message.error("导出失败: " + res.message);
+          }
+      } catch (e: any) {
+          message.error("导出失败: " + (e?.message || String(e)));
+      } finally {
+          hide();
+      }
   };
   
   const [sortInfo, setSortInfo] = useState<{ columnKey: string, order: string } | null>(null);
@@ -2101,6 +2120,10 @@ const DataGrid: React.FC<DataGridProps> = ({
   }, []);
 
   const handleCopyInsert = useCallback((record: any) => {
+      if (!supportsCopyInsert) {
+          message.warning("当前数据源不支持复制为 INSERT，请使用 JSON/CSV/Markdown 复制。");
+          return;
+      }
       const records = getTargets(record);
       const sqls = records.map((r: any) => {
           const { [GONAVI_ROW_KEY]: _rowKey, ...vals } = r;
@@ -2110,7 +2133,7 @@ const DataGrid: React.FC<DataGridProps> = ({
           return `INSERT INTO \`${targetTable}\` (${cols.map(c => `\`${c}\``).join(', ')}) VALUES (${values.join(', ')});`;
       });
       copyToClipboard(sqls.join('\n'));
-  }, [tableName, getTargets, copyToClipboard]);
+  }, [supportsCopyInsert, tableName, getTargets, copyToClipboard]);
 
   const handleCopyJson = useCallback((record: any) => {
       const records = getTargets(record);
@@ -2149,12 +2172,17 @@ const DataGrid: React.FC<DataGridProps> = ({
       const config = buildConnConfig();
       if (!config) return;
       const hide = message.loading(`正在导出...`, 0);
-      const res = await ExportQuery(config as any, dbName || '', sql, defaultName || 'export', format);
-      hide();
-      if (res.success) {
-          message.success("导出成功");
-      } else if (res.message !== "Cancelled") {
-          message.error("导出失败: " + res.message);
+      try {
+          const res = await ExportQuery(config as any, dbName || '', sql, defaultName || 'export', format);
+          if (res.success) {
+              message.success("导出成功");
+          } else if (res.message !== "Cancelled") {
+              message.error("导出失败: " + res.message);
+          }
+      } catch (e: any) {
+          message.error("导出失败: " + (e?.message || String(e)));
+      } finally {
+          hide();
       }
   }, [buildConnConfig, dbName]);
 
@@ -2198,6 +2226,10 @@ const DataGrid: React.FC<DataGridProps> = ({
   // Context Menu Export
   const handleExportSelected = useCallback(async (format: string, record: any) => {
       const records = getTargets(record);
+      if (isQueryResultExport) {
+          await exportData(records, format);
+          return;
+      }
       if (!connectionId || !tableName) {
           await exportData(records, format);
           return;
@@ -2225,11 +2257,11 @@ const DataGrid: React.FC<DataGridProps> = ({
 
       const sql = `SELECT * FROM ${quoteQualifiedIdent(dbType, tableName)} WHERE ${pkWhere}`;
       await exportByQuery(sql, format, tableName || 'export');
-  }, [getTargets, connectionId, tableName, hasChanges, exportData, buildConnConfig, buildPkWhereSql, exportByQuery]);
+  }, [getTargets, isQueryResultExport, connectionId, tableName, hasChanges, exportData, buildConnConfig, buildPkWhereSql, exportByQuery]);
 
   // Export
   const handleExport = async (format: string) => {
-      if (!connectionId || !tableName) return;
+      if (!connectionId) return;
       
       // 1. Export Selected
       if (selectedRowKeys.length > 0) {
@@ -2238,17 +2270,38 @@ const DataGrid: React.FC<DataGridProps> = ({
           return;
       }
 
+      // 查询结果页导出统一按当前结果集（已加载数据）导出，避免再次执行原 SQL 造成大数据导出或长时间阻塞。
+      if (isQueryResultExport) {
+          const sql = String(resultSql || '').trim();
+          if (!hasChanges && supportsSqlQueryExport && sql) {
+              await exportByQuery(sql, format, tableName || 'query_result');
+          } else {
+              await exportData(mergedDisplayData, format);
+          }
+          return;
+      }
+
       // 2. Prompt for Current vs All
       // Using a custom modal content with buttons to handle 3 states
       let instance: any;
       const handleAll = async () => {
           instance.destroy();
+          if (!tableName) return;
           const config = buildConnConfig();
           if (!config) return;
           const hide = message.loading(`正在导出全部数据...`, 0);
-          const res = await ExportTable(config as any, dbName || '', tableName, format);
-          hide();
-          if (res.success) { message.success("导出成功"); } else if (res.message !== "Cancelled") { message.error("导出失败: " + res.message); }
+          try {
+              const res = await ExportTable(config as any, dbName || '', tableName, format);
+              if (res.success) {
+                  message.success("导出成功");
+              } else if (res.message !== "Cancelled") {
+                  message.error("导出失败: " + res.message);
+              }
+          } catch (e: any) {
+              message.error("导出失败: " + (e?.message || String(e)));
+          } finally {
+              hide();
+          }
       };
       const handlePage = async () => {
           instance.destroy();
@@ -2411,7 +2464,8 @@ const DataGrid: React.FC<DataGridProps> = ({
       copyToClipboard,
       tableName,
       enableRowContextMenu: !canModifyData,
-  }), [handleCopyCsv, handleCopyInsert, handleCopyJson, handleExportSelected, copyToClipboard, tableName, canModifyData]);
+      supportsCopyInsert,
+  }), [handleCopyCsv, handleCopyInsert, handleCopyJson, handleExportSelected, copyToClipboard, tableName, canModifyData, supportsCopyInsert]);
 
   const cellContextMenuValue = useMemo(() => ({
       showMenu: showCellContextMenu,
@@ -2456,8 +2510,8 @@ const DataGrid: React.FC<DataGridProps> = ({
 	               setSelectedRowKeys([]);
 	               onReload();
 	           }}>刷新</Button>}
-	           {tableName && <Button icon={<ImportOutlined />} onClick={handleImport}>导入</Button>}
-	           {tableName && <Dropdown menu={{ items: exportMenu }}><Button icon={<ExportOutlined />}>导出 <DownOutlined /></Button></Dropdown>}
+	           {canImport && <Button icon={<ImportOutlined />} onClick={handleImport}>导入</Button>}
+	           {canExport && <Dropdown menu={{ items: exportMenu }}><Button icon={<ExportOutlined />}>导出 <DownOutlined /></Button></Dropdown>}
 	           
 	           {canModifyData && (
 	               <>
@@ -2996,21 +3050,23 @@ const DataGrid: React.FC<DataGridProps> = ({
                     填充到选中行 ({selectedRowKeys.length})
                 </div>
                 <div style={{ height: 1, background: darkMode ? '#303030' : '#f0f0f0', margin: '4px 0' }} />
-                <div
-                    style={{
-                        padding: '8px 12px',
-                        cursor: 'pointer',
-                        transition: 'background 0.2s',
-                    }}
-                    onMouseEnter={(e) => e.currentTarget.style.background = darkMode ? '#303030' : '#f5f5f5'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                    onClick={() => {
-                        if (cellContextMenu.record) handleCopyInsert(cellContextMenu.record);
-                        setCellContextMenu(prev => ({ ...prev, visible: false }));
-                    }}
-                >
-                    复制为 INSERT
-                </div>
+                {supportsCopyInsert && (
+                    <div
+                        style={{
+                            padding: '8px 12px',
+                            cursor: 'pointer',
+                            transition: 'background 0.2s',
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = darkMode ? '#303030' : '#f5f5f5'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                        onClick={() => {
+                            if (cellContextMenu.record) handleCopyInsert(cellContextMenu.record);
+                            setCellContextMenu(prev => ({ ...prev, visible: false }));
+                        }}
+                    >
+                        复制为 INSERT
+                    </div>
+                )}
                 <div
                     style={{
                         padding: '8px 12px',

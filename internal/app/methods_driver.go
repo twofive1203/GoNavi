@@ -225,7 +225,7 @@ const builtinDriverManifestJSON = `{
     "vastbase":  { "engine": "go", "version": "1.11.1", "checksumPolicy": "off", "downloadUrl": "builtin://activate/vastbase" },
     "mongodb":   { "engine": "go", "version": "2.5.0", "checksumPolicy": "off", "downloadUrl": "builtin://activate/mongodb" },
     "tdengine":  { "engine": "go", "version": "3.7.8", "checksumPolicy": "off", "downloadUrl": "builtin://activate/tdengine" },
-    "clickhouse": { "engine": "go", "version": "2.43.0", "checksumPolicy": "off", "downloadUrl": "builtin://activate/clickhouse" }
+    "clickhouse": { "engine": "go", "version": "2.43.1", "checksumPolicy": "off", "downloadUrl": "builtin://activate/clickhouse" }
   }
 }`
 
@@ -278,7 +278,7 @@ var latestDriverVersionMap = map[string]string{
 	"vastbase":   "1.11.2",
 	"mongodb":    "2.5.0",
 	"tdengine":   "3.7.8",
-	"clickhouse": "2.43.0",
+	"clickhouse": "2.43.1",
 	"oracle":     "2.9.0",
 	"postgres":   "1.11.2",
 	"redis":      "9.17.3",

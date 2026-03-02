@@ -11,8 +11,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"GoNavi-Wails/internal/connection"
+	"GoNavi-Wails/internal/logger"
 )
 
 const (
@@ -38,6 +40,7 @@ type optionalAgentRequest struct {
 	Method    string                       `json:"method"`
 	Config    *connection.ConnectionConfig `json:"config,omitempty"`
 	Query     string                       `json:"query,omitempty"`
+	TimeoutMs int64                        `json:"timeoutMs,omitempty"`
 	DBName    string                       `json:"dbName,omitempty"`
 	TableName string                       `json:"tableName,omitempty"`
 	Changes   *connection.ChangeSet        `json:"changes,omitempty"`
@@ -223,6 +226,7 @@ func (d *OptionalDriverAgentDB) Connect(config connection.ConnectionConfig) erro
 	if err != nil {
 		return err
 	}
+	logger.Infof("%s 驱动代理路径：%s", driverDisplayName(d.driverType), executablePath)
 	client, err := newOptionalDriverAgentClient(d.driverType, executablePath)
 	if err != nil {
 		return err
@@ -260,7 +264,20 @@ func (d *OptionalDriverAgentDB) QueryContext(ctx context.Context, query string) 
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	return d.Query(query)
+	client, err := d.requireClient()
+	if err != nil {
+		return nil, nil, err
+	}
+	var data []map[string]interface{}
+	var fields []string
+	if err := client.call(optionalAgentRequest{
+		Method:    optionalAgentMethodQuery,
+		Query:     query,
+		TimeoutMs: timeoutMsFromContext(ctx),
+	}, &data, &fields, nil); err != nil {
+		return nil, nil, err
+	}
+	return data, fields, nil
 }
 
 func (d *OptionalDriverAgentDB) Query(query string) ([]map[string]interface{}, []string, error) {
@@ -283,7 +300,19 @@ func (d *OptionalDriverAgentDB) ExecContext(ctx context.Context, query string) (
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	return d.Exec(query)
+	client, err := d.requireClient()
+	if err != nil {
+		return 0, err
+	}
+	var affected int64
+	if err := client.call(optionalAgentRequest{
+		Method:    optionalAgentMethodExec,
+		Query:     query,
+		TimeoutMs: timeoutMsFromContext(ctx),
+	}, nil, nil, &affected); err != nil {
+		return 0, err
+	}
+	return affected, nil
 }
 
 func (d *OptionalDriverAgentDB) Exec(query string) (int64, error) {
@@ -442,4 +471,16 @@ func (d *OptionalDriverAgentDB) requireClient() (*optionalDriverAgentClient, err
 		return nil, fmt.Errorf("connection not open")
 	}
 	return d.client, nil
+}
+
+func timeoutMsFromContext(ctx context.Context) int64 {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	remaining := time.Until(deadline).Milliseconds()
+	if remaining <= 0 {
+		return 1
+	}
+	return remaining
 }

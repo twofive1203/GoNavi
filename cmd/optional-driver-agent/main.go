@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
 	"strings"
+	"time"
 
 	"GoNavi-Wails/internal/connection"
 	"GoNavi-Wails/internal/db"
@@ -17,6 +19,7 @@ type agentRequest struct {
 	Method    string                       `json:"method"`
 	Config    *connection.ConnectionConfig `json:"config,omitempty"`
 	Query     string                       `json:"query,omitempty"`
+	TimeoutMs int64                        `json:"timeoutMs,omitempty"`
 	DBName    string                       `json:"dbName,omitempty"`
 	TableName string                       `json:"tableName,omitempty"`
 	Changes   *connection.ChangeSet        `json:"changes,omitempty"`
@@ -47,6 +50,8 @@ const (
 	agentMethodGetTriggers   = "getTriggers"
 	agentMethodApplyChanges  = "applyChanges"
 )
+
+const legacyClickHouseDefaultTimeout = 2 * time.Hour
 
 var (
 	agentDriverType      string
@@ -138,14 +143,14 @@ func handleRequest(inst *db.Database, req agentRequest) agentResponse {
 			return fail(resp, err.Error())
 		}
 	case agentMethodQuery:
-		data, fields, err := (*inst).Query(req.Query)
+		data, fields, err := queryWithOptionalTimeout(*inst, req.Query, req.TimeoutMs)
 		if err != nil {
 			return fail(resp, err.Error())
 		}
 		resp.Data = data
 		resp.Fields = fields
 	case agentMethodExec:
-		affected, err := (*inst).Exec(req.Query)
+		affected, err := execWithOptionalTimeout(*inst, req.Query, req.TimeoutMs)
 		if err != nil {
 			return fail(resp, err.Error())
 		}
@@ -286,4 +291,40 @@ func normalizeAgentResponseData(v interface{}) interface{} {
 	default:
 		return v
 	}
+}
+
+func queryWithOptionalTimeout(inst db.Database, query string, timeoutMs int64) ([]map[string]interface{}, []string, error) {
+	effectiveTimeoutMs := timeoutMs
+	if effectiveTimeoutMs <= 0 && strings.EqualFold(strings.TrimSpace(agentDriverType), "clickhouse") {
+		effectiveTimeoutMs = int64(legacyClickHouseDefaultTimeout / time.Millisecond)
+	}
+	if effectiveTimeoutMs <= 0 {
+		return inst.Query(query)
+	}
+	if q, ok := inst.(interface {
+		QueryContext(context.Context, string) ([]map[string]interface{}, []string, error)
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(effectiveTimeoutMs)*time.Millisecond)
+		defer cancel()
+		return q.QueryContext(ctx, query)
+	}
+	return inst.Query(query)
+}
+
+func execWithOptionalTimeout(inst db.Database, query string, timeoutMs int64) (int64, error) {
+	effectiveTimeoutMs := timeoutMs
+	if effectiveTimeoutMs <= 0 && strings.EqualFold(strings.TrimSpace(agentDriverType), "clickhouse") {
+		effectiveTimeoutMs = int64(legacyClickHouseDefaultTimeout / time.Millisecond)
+	}
+	if effectiveTimeoutMs <= 0 {
+		return inst.Exec(query)
+	}
+	if e, ok := inst.(interface {
+		ExecContext(context.Context, string) (int64, error)
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(effectiveTimeoutMs)*time.Millisecond)
+		defer cancel()
+		return e.ExecContext(ctx, query)
+	}
+	return inst.Exec(query)
 }

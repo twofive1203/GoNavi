@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { Button, message, Modal, Input, Form, Dropdown, MenuProps, Tooltip, Select, Tabs } from 'antd';
 import { PlayCircleOutlined, SaveOutlined, FormatPainterOutlined, SettingOutlined, CloseOutlined } from '@ant-design/icons';
@@ -7,6 +7,7 @@ import { TabData, ColumnDefinition } from '../types';
 import { useStore } from '../store';
 import { DBQuery, DBGetTables, DBGetAllColumns, DBGetDatabases, DBGetColumns } from '../../wailsjs/go/app/App';
 import DataGrid, { GONAVI_ROW_KEY } from './DataGrid';
+import { getDataSourceCapabilities } from '../utils/dataSourceCapabilities';
 
 const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
   const [query, setQuery] = useState(tab.query || 'SELECT * FROM ');
@@ -14,6 +15,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
   type ResultSet = {
       key: string;
       sql: string;
+      exportSql?: string;
       rows: any[];
       columns: string[];
       tableName?: string;
@@ -47,6 +49,10 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
   const visibleDbsRef = useRef<string[]>([]); // Store visible databases for cross-db intellisense
 
   const connections = useStore(state => state.connections);
+  const queryCapableConnections = useMemo(
+      () => connections.filter(c => getDataSourceCapabilities(c.config).supportsQueryEditor),
+      [connections]
+  );
   const addSqlLog = useStore(state => state.addSqlLog);
   const currentConnectionIdRef = useRef(currentConnectionId);
   const currentDbRef = useRef(currentDb);
@@ -63,6 +69,16 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
   useEffect(() => {
       currentConnectionIdRef.current = currentConnectionId;
   }, [currentConnectionId]);
+
+  useEffect(() => {
+      if (!queryCapableConnections.some(c => c.id === currentConnectionId)) {
+          const fallback = queryCapableConnections[0]?.id || '';
+          if (fallback && fallback !== currentConnectionId) {
+              setCurrentConnectionId(fallback);
+              setCurrentDb('');
+          }
+      }
+  }, [queryCapableConnections, currentConnectionId]);
 
   useEffect(() => {
       currentDbRef.current = currentDb;
@@ -977,6 +993,12 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
         if (runSeqRef.current === runSeq) setLoading(false);
         return;
     }
+    const connCaps = getDataSourceCapabilities(conn.config);
+    if (!connCaps.supportsQueryEditor) {
+        message.error("当前数据源不支持 SQL 查询编辑器，请使用对应专用页面。");
+        if (runSeqRef.current === runSeq) setLoading(false);
+        return;
+    }
 
     const config = { 
         ...conn.config, 
@@ -1000,8 +1022,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
         const nextResultSets: ResultSet[] = [];
         const maxRows = Number(queryOptions?.maxRows) || 0;
         const dbType = String((config as any).type || 'mysql');
-        const normalizedDbType = dbType.toLowerCase();
-        const forceReadOnlyResult = normalizedDbType === 'tdengine' || normalizedDbType === 'clickhouse';
+        const forceReadOnlyResult = connCaps.forceReadOnlyQueryResult;
         const wantsLimitProbe = Number.isFinite(maxRows) && maxRows > 0;
         const probeLimit = wantsLimitProbe ? (maxRows + 1) : 0;
         let anyTruncated = false;
@@ -1066,6 +1087,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
                 nextResultSets.push({
                     key: `result-${idx + 1}`,
                     sql: rawStatement,
+                    exportSql: limited.applied ? applyAutoLimit(rawStatement, dbType, Math.max(1, Number(maxRows) || 1)).sql : rawStatement,
                     rows,
                     columns: cols,
                     tableName: simpleTableName,
@@ -1082,6 +1104,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
                     nextResultSets.push({
                         key: `result-${idx + 1}`,
                         sql: rawStatement,
+                        exportSql: rawStatement,
                         rows: [row],
                         columns: ['affectedRows'],
                         pkColumns: [],
@@ -1223,7 +1246,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
                 setCurrentConnectionId(val);
                 setCurrentDb('');
             }}
-            options={connections.map(c => ({ label: c.name, value: c.id }))}
+            options={queryCapableConnections.map(c => ({ label: c.name, value: c.id }))}
             showSearch
         />
         <Select 
@@ -1333,6 +1356,8 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
                               columnNames={rs.columns}
                               loading={loading}
                               tableName={rs.tableName}
+                              exportScope="queryResult"
+                              resultSql={rs.exportSql || rs.sql}
                               dbName={currentDb}
                               connectionId={currentConnectionId}
                               pkColumns={rs.pkColumns}

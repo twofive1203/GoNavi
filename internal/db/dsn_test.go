@@ -147,7 +147,7 @@ func TestClickHouseOptions_UsesStructuredTimeoutAndAuth(t *testing.T) {
 	if opts.DialTimeout != 15*time.Second {
 		t.Fatalf("dial timeout 不符合预期：%s", opts.DialTimeout)
 	}
-	if opts.ReadTimeout != 15*time.Second {
+	if opts.ReadTimeout != minClickHouseReadTimeout {
 		t.Fatalf("read timeout 不符合预期：%s", opts.ReadTimeout)
 	}
 	if _, ok := opts.Settings["write_timeout"]; ok {
@@ -158,5 +158,29 @@ func TestClickHouseOptions_UsesStructuredTimeoutAndAuth(t *testing.T) {
 	}
 	if _, ok := opts.Settings["dial_timeout"]; ok {
 		t.Fatalf("options 不应通过 settings 传递 dial_timeout：%v", opts.Settings)
+	}
+}
+
+func TestClickHouseOptions_ReadTimeoutUsesLargerConfiguredTimeout(t *testing.T) {
+	c := &ClickHouseDB{}
+	cfg := normalizeClickHouseConfig(connection.ConnectionConfig{
+		Type:     "clickhouse",
+		Host:     "127.0.0.1",
+		Port:     9000,
+		User:     "default",
+		Password: "secret",
+		Database: "analytics",
+		Timeout:  900,
+	})
+
+	opts := c.buildClickHouseOptions(cfg)
+	if opts == nil {
+		t.Fatal("options 为空")
+	}
+	if opts.DialTimeout != 900*time.Second {
+		t.Fatalf("dial timeout 不符合预期：%s", opts.DialTimeout)
+	}
+	if opts.ReadTimeout != 900*time.Second {
+		t.Fatalf("read timeout 不符合预期：%s", opts.ReadTimeout)
 	}
 }

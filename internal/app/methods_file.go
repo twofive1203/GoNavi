@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -16,10 +17,15 @@ import (
 
 	"GoNavi-Wails/internal/connection"
 	"GoNavi-Wails/internal/db"
+	"GoNavi-Wails/internal/logger"
+	"GoNavi-Wails/internal/utils"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/xuri/excelize/v2"
 )
+
+const minExportQueryTimeout = 5 * time.Minute
+const minClickHouseExportQueryTimeout = 2 * time.Hour
 
 func (a *App) OpenSQLFile() connection.QueryResult {
 	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
@@ -614,7 +620,7 @@ func (a *App) ExportTable(config connection.ConnectionConfig, dbName string, tab
 
 	query := fmt.Sprintf("SELECT * FROM %s", quoteQualifiedIdentByType(runConfig.Type, tableName))
 
-	data, columns, err := dbInst.Query(query)
+	data, columns, err := queryDataForExport(dbInst, runConfig, query)
 	if err != nil {
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
@@ -945,7 +951,7 @@ func listViewNameLookup(dbInst db.Database, config connection.ConnectionConfig, 
 		if strings.TrimSpace(query) == "" {
 			continue
 		}
-		rows, _, err := dbInst.Query(query)
+		rows, _, err := queryDataForExport(dbInst, config, query)
 		if err != nil {
 			continue
 		}
@@ -1056,7 +1062,7 @@ func tryGetViewCreateStatement(
 		if strings.TrimSpace(query) == "" {
 			continue
 		}
-		rows, _, err := dbInst.Query(query)
+		rows, _, err := queryDataForExport(dbInst, config, query)
 		if err != nil || len(rows) == 0 {
 			continue
 		}
@@ -1421,7 +1427,7 @@ func dumpTableSQL(
 
 	qualified := qualifyTable(schemaName, pureTableName)
 	selectSQL := fmt.Sprintf("SELECT * FROM %s", quoteQualifiedIdentByType(config.Type, qualified))
-	data, columns, err := dbInst.Query(selectSQL)
+	data, columns, err := queryDataForExport(dbInst, config, selectSQL)
 	if err != nil {
 		return err
 	}
@@ -1456,14 +1462,17 @@ func (a *App) ExportData(data []map[string]interface{}, columns []string, defaul
 	if defaultName == "" {
 		defaultName = "export"
 	}
+	logger.Infof("ExportData 开始：rows=%d cols=%d format=%s defaultName=%s", len(data), len(columns), strings.ToLower(strings.TrimSpace(format)), strings.TrimSpace(defaultName))
 	filename, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           "Export Data",
 		DefaultFilename: fmt.Sprintf("%s.%s", defaultName, strings.ToLower(format)),
 	})
 
 	if err != nil || filename == "" {
+		logger.Infof("ExportData 已取消或未选择文件：err=%v", err)
 		return connection.QueryResult{Success: false, Message: "Cancelled"}
 	}
+	logger.Infof("ExportData 选定文件：%s", filename)
 
 	f, err := os.Create(filename)
 	if err != nil {
@@ -1471,9 +1480,11 @@ func (a *App) ExportData(data []map[string]interface{}, columns []string, defaul
 	}
 	defer f.Close()
 	if err := writeRowsToFile(f, data, columns, format); err != nil {
+		logger.Warnf("ExportData 写入失败：file=%s err=%v", filename, err)
 		return connection.QueryResult{Success: false, Message: "Write error: " + err.Error()}
 	}
 
+	logger.Infof("ExportData 完成：file=%s rows=%d", filename, len(data))
 	return connection.QueryResult{Success: true, Message: "Export successful"}
 }
 
@@ -1494,8 +1505,10 @@ func (a *App) ExportQuery(config connection.ConnectionConfig, dbName string, que
 		DefaultFilename: fmt.Sprintf("%s.%s", defaultName, strings.ToLower(format)),
 	})
 	if err != nil || filename == "" {
+		logger.Infof("ExportQuery 已取消或未选择文件：err=%v", err)
 		return connection.QueryResult{Success: false, Message: "Cancelled"}
 	}
+	logger.Infof("ExportQuery 开始：type=%s db=%s format=%s file=%s sql=%q", strings.TrimSpace(config.Type), strings.TrimSpace(dbName), strings.ToLower(strings.TrimSpace(format)), filename, sqlSnippet(query))
 
 	runConfig := normalizeRunConfig(config, dbName)
 	dbInst, err := a.getDatabase(runConfig)
@@ -1509,8 +1522,9 @@ func (a *App) ExportQuery(config connection.ConnectionConfig, dbName string, que
 		return connection.QueryResult{Success: false, Message: "Only SELECT/WITH queries are supported"}
 	}
 
-	data, columns, err := dbInst.Query(query)
+	data, columns, err := queryDataForExport(dbInst, runConfig, query)
 	if err != nil {
+		logger.Warnf("ExportQuery 查询失败：type=%s db=%s err=%v sql=%q", strings.TrimSpace(config.Type), strings.TrimSpace(dbName), err, sqlSnippet(query))
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
@@ -1521,10 +1535,53 @@ func (a *App) ExportQuery(config connection.ConnectionConfig, dbName string, que
 	defer f.Close()
 
 	if err := writeRowsToFile(f, data, columns, format); err != nil {
+		logger.Warnf("ExportQuery 写入失败：file=%s err=%v", filename, err)
 		return connection.QueryResult{Success: false, Message: "Write error: " + err.Error()}
 	}
 
+	logger.Infof("ExportQuery 完成：file=%s rows=%d cols=%d", filename, len(data), len(columns))
 	return connection.QueryResult{Success: true, Message: "Export successful"}
+}
+
+func queryDataForExport(dbInst db.Database, config connection.ConnectionConfig, query string) ([]map[string]interface{}, []string, error) {
+	timeout := getExportQueryTimeout(config)
+	dbType := resolveDDLDBType(config)
+	if dbType == "clickhouse" {
+		logger.Infof("ClickHouse 导出查询开始：timeout=%s SQL片段=%q", timeout, sqlSnippet(query))
+	}
+	if q, ok := dbInst.(interface {
+		QueryContext(context.Context, string) ([]map[string]interface{}, []string, error)
+	}); ok {
+		ctx, cancel := utils.ContextWithTimeout(timeout)
+		defer cancel()
+		data, columns, err := q.QueryContext(ctx, query)
+		if err != nil && dbType == "clickhouse" {
+			logger.Warnf("ClickHouse 导出查询失败：timeout=%s SQL片段=%q err=%v", timeout, sqlSnippet(query), err)
+		}
+		return data, columns, err
+	}
+	data, columns, err := dbInst.Query(query)
+	if err != nil && dbType == "clickhouse" {
+		logger.Warnf("ClickHouse 导出查询失败（无 QueryContext）：timeout=%s SQL片段=%q err=%v", timeout, sqlSnippet(query), err)
+	}
+	return data, columns, err
+}
+
+func getExportQueryTimeout(config connection.ConnectionConfig) time.Duration {
+	timeout := time.Duration(config.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = minExportQueryTimeout
+	}
+	if resolveDDLDBType(config) == "clickhouse" {
+		if timeout < minClickHouseExportQueryTimeout {
+			timeout = minClickHouseExportQueryTimeout
+		}
+		return timeout
+	}
+	if timeout < minExportQueryTimeout {
+		timeout = minExportQueryTimeout
+	}
+	return timeout
 }
 
 func writeRowsToFile(f *os.File, data []map[string]interface{}, columns []string, format string) error {

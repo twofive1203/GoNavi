@@ -379,7 +379,7 @@ jobs:
       - name: List Assets
         run: ls -R release-assets
 
-      - name: Verify DuckDB Driver Assets
+      - name: Verify Optional Driver Assets
         shell: bash
         run: |
           set -euo pipefail
@@ -390,20 +390,24 @@ jobs:
             "drivers/MacOS/duckdb-driver-agent-darwin-amd64"
             "drivers/MacOS/duckdb-driver-agent-darwin-arm64"
             "drivers/Linux/duckdb-driver-agent-linux-amd64"
+            "drivers/Windows/clickhouse-driver-agent-windows-amd64.exe"
+            "drivers/MacOS/clickhouse-driver-agent-darwin-amd64"
+            "drivers/MacOS/clickhouse-driver-agent-darwin-arm64"
+            "drivers/Linux/clickhouse-driver-agent-linux-amd64"
           )
 
           missing=0
           for file in "${REQUIRED_FILES[@]}"; do
             if [ ! -f "$file" ]; then
-              echo "❌ 缺少 DuckDB 驱动资产：$file"
+              echo "❌ 缺少驱动资产：$file"
               missing=1
             else
-              echo "✅ 已找到 DuckDB 驱动资产：$file"
+              echo "✅ 已找到驱动资产：$file"
             fi
           done
 
           if [ "$missing" -ne 0 ]; then
-            echo "❌ DuckDB 驱动资产不完整，终止发布"
+            echo "❌ 可选驱动资产不完整，终止发布"
             exit 1
           fi
 

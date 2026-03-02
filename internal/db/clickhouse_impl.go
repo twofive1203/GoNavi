@@ -24,6 +24,7 @@ const (
 	defaultClickHousePort     = 9000
 	defaultClickHouseUser     = "default"
 	defaultClickHouseDatabase = "default"
+	minClickHouseReadTimeout  = 5 * time.Minute
 )
 
 type ClickHouseDB struct {
@@ -101,7 +102,11 @@ func applyClickHouseURI(config connection.ConnectionConfig) connection.Connectio
 }
 
 func (c *ClickHouseDB) buildClickHouseOptions(config connection.ConnectionConfig) *clickhouse.Options {
-	timeout := getConnectTimeout(config)
+	connectTimeout := getConnectTimeout(config)
+	readTimeout := connectTimeout
+	if readTimeout < minClickHouseReadTimeout {
+		readTimeout = minClickHouseReadTimeout
+	}
 	return &clickhouse.Options{
 		Addr: []string{
 			net.JoinHostPort(config.Host, strconv.Itoa(config.Port)),
@@ -111,8 +116,8 @@ func (c *ClickHouseDB) buildClickHouseOptions(config connection.ConnectionConfig
 			Username: strings.TrimSpace(config.User),
 			Password: config.Password,
 		},
-		DialTimeout: timeout,
-		ReadTimeout: timeout,
+		DialTimeout: connectTimeout,
+		ReadTimeout: readTimeout,
 	}
 }
 
