@@ -17,18 +17,33 @@ type ViewerPaginationState = {
   totalCountCancelled: boolean;
 };
 
+const JS_MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+const isIntegerText = (text: string): boolean => /^[+-]?\d+$/.test(text);
+
 const toNonNegativeFiniteNumber = (value: unknown): number | null => {
   if (typeof value === 'number') {
-    return Number.isFinite(value) && value >= 0 ? value : null;
+    return Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : null;
   }
   if (typeof value === 'bigint') {
-    return value >= 0n ? Number(value) : null;
+    return value >= 0n && value <= JS_MAX_SAFE_INTEGER_BIGINT ? Number(value) : null;
   }
   if (typeof value === 'string') {
     const text = value.trim();
     if (!text) return null;
+    if (isIntegerText(text)) {
+      try {
+        const parsedBigInt = BigInt(text);
+        if (parsedBigInt < 0n || parsedBigInt > JS_MAX_SAFE_INTEGER_BIGINT) {
+          return null;
+        }
+        return Number(parsedBigInt);
+      } catch {
+        return null;
+      }
+    }
     const parsed = Number(text);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= Number.MAX_SAFE_INTEGER ? parsed : null;
   }
   return null;
 };
@@ -560,11 +575,7 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
                             if (!resCount.success) return;
                             if (!Array.isArray(resCount.data) || resCount.data.length === 0) return;
 
-                            let total: number | null = null;
-                            const parsed = Number(resCount.data[0]?.['total']);
-                            if (Number.isFinite(parsed) && parsed >= 0) {
-                                total = parsed;
-                            }
+                            const total = parseTotalFromCountRow(resCount.data[0]);
                             if (total === null) return;
 
                             setPagination(prev => ({

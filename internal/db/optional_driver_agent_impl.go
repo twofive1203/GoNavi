@@ -179,7 +179,7 @@ func (c *optionalDriverAgentClient) call(req optionalAgentRequest, out interface
 		*rowsAffected = resp.RowsAffected
 	}
 	if out != nil && len(resp.Data) > 0 {
-		if err := json.Unmarshal(resp.Data, out); err != nil {
+		if err := decodeJSONWithUseNumber(resp.Data, out); err != nil {
 			return fmt.Errorf("解析 %s 驱动代理数据失败：%w", driverDisplayName(c.driver), err)
 		}
 	}

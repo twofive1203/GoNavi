@@ -1,6 +1,9 @@
 package db
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 type duckMapLike map[any]any
 
@@ -79,5 +82,86 @@ func TestNormalizeQueryValueWithDBType_MapAnyAnyForJSON(t *testing.T) {
 	}
 	if nested["2"] != "two" {
 		t.Fatalf("嵌套 map 数字 key 未转换，实际=%v(%T)", nested["2"], nested["2"])
+	}
+}
+
+func TestNormalizeQueryValueWithDBType_UnsafeIntegersAsString(t *testing.T) {
+	cases := []struct {
+		name  string
+		input interface{}
+		want  string
+	}{
+		{name: "int64 overflow", input: int64(9007199254740992), want: "9007199254740992"},
+		{name: "int64 underflow", input: int64(-9007199254740992), want: "-9007199254740992"},
+		{name: "uint64 overflow", input: uint64(9007199254740992), want: "9007199254740992"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeQueryValueWithDBType(tc.input, "")
+			if got != tc.want {
+				t.Fatalf("期望=%q，实际=%v(%T)", tc.want, got, got)
+			}
+		})
+	}
+}
+
+func TestNormalizeQueryValueWithDBType_SafeIntegersKeepType(t *testing.T) {
+	got := normalizeQueryValueWithDBType(int64(9007199254740991), "")
+	if _, ok := got.(int64); !ok {
+		t.Fatalf("安全范围 int64 应保持数字类型，实际=%v(%T)", got, got)
+	}
+
+	got = normalizeQueryValueWithDBType(uint64(9007199254740991), "")
+	if _, ok := got.(uint64); !ok {
+		t.Fatalf("安全范围 uint64 应保持数字类型，实际=%v(%T)", got, got)
+	}
+}
+
+func TestNormalizeQueryValueWithDBType_JSONNumber(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     json.Number
+		wantType  string
+		wantValue string
+	}{
+		{name: "safe integer", input: json.Number("9007199254740991"), wantType: "int64", wantValue: "9007199254740991"},
+		{name: "unsafe integer", input: json.Number("9007199254740992"), wantType: "string", wantValue: "9007199254740992"},
+		{name: "unsafe negative integer", input: json.Number("-9007199254740992"), wantType: "string", wantValue: "-9007199254740992"},
+		{name: "decimal", input: json.Number("12.5"), wantType: "float64", wantValue: "12.5"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeQueryValueWithDBType(tc.input, "")
+			switch tc.wantType {
+			case "int64":
+				v, ok := got.(int64)
+				if !ok {
+					t.Fatalf("期望 int64，实际=%T", got)
+				}
+				if v != 9007199254740991 {
+					t.Fatalf("期望值=%s，实际=%d", tc.wantValue, v)
+				}
+			case "string":
+				v, ok := got.(string)
+				if !ok {
+					t.Fatalf("期望 string，实际=%T", got)
+				}
+				if v != tc.wantValue {
+					t.Fatalf("期望值=%s，实际=%s", tc.wantValue, v)
+				}
+			case "float64":
+				v, ok := got.(float64)
+				if !ok {
+					t.Fatalf("期望 float64，实际=%T", got)
+				}
+				if v != 12.5 {
+					t.Fatalf("期望值=%s，实际=%v", tc.wantValue, v)
+				}
+			default:
+				t.Fatalf("未知断言类型：%s", tc.wantType)
+			}
+		})
 	}
 }

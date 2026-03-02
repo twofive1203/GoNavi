@@ -174,7 +174,7 @@ func (c *mysqlAgentClient) call(req mysqlAgentRequest, out interface{}, fields *
 		*rowsAffected = resp.RowsAffected
 	}
 	if out != nil && len(resp.Data) > 0 {
-		if err := json.Unmarshal(resp.Data, out); err != nil {
+		if err := decodeJSONWithUseNumber(resp.Data, out); err != nil {
 			return fmt.Errorf("解析 MySQL 驱动代理数据失败：%w", err)
 		}
 	}
