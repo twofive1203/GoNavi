@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Layout, Button, ConfigProvider, theme, Dropdown, MenuProps, message, Modal, Spin, Slider, Progress, Switch, Input, InputNumber, Select } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { PlusOutlined, BulbOutlined, BulbFilled, ConsoleSqlOutlined, UploadOutlined, DownloadOutlined, CloudDownloadOutlined, BugOutlined, ToolOutlined, GlobalOutlined, InfoCircleOutlined, GithubOutlined, SkinOutlined, CheckOutlined, MinusOutlined, BorderOutlined, CloseOutlined, SettingOutlined } from '@ant-design/icons';
-import { Environment, EventsOn, WindowFullscreen, WindowIsFullscreen, WindowIsMaximised, WindowMaximise } from '../wailsjs/runtime/runtime';
+import { PlusOutlined, ConsoleSqlOutlined, UploadOutlined, DownloadOutlined, CloudDownloadOutlined, BugOutlined, ToolOutlined, GlobalOutlined, InfoCircleOutlined, GithubOutlined, SkinOutlined, CheckOutlined, MinusOutlined, BorderOutlined, CloseOutlined, SettingOutlined } from '@ant-design/icons';
+import { BrowserOpenURL, Environment, EventsOn, Quit, WindowFullscreen, WindowIsFullscreen, WindowIsMaximised, WindowMaximise, WindowMinimise, WindowToggleMaximise } from '../wailsjs/runtime';
 import Sidebar from './components/Sidebar';
 import TabManager from './components/TabManager';
 import ConnectionModal from './components/ConnectionModal';
@@ -22,6 +22,19 @@ const MIN_FONT_SIZE = 12;
 const MAX_FONT_SIZE = 20;
 const DEFAULT_UI_SCALE = 1.0;
 const DEFAULT_FONT_SIZE = 14;
+
+const detectNavigatorPlatform = (): string => {
+  if (typeof navigator === 'undefined') {
+      return '';
+  }
+  const uaDataPlatform = (navigator as Navigator & {
+      userAgentData?: { platform?: string };
+  }).userAgentData?.platform;
+  if (uaDataPlatform) {
+      return uaDataPlatform;
+  }
+  return navigator.userAgent || '';
+};
 
 function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -66,7 +79,7 @@ function App() {
   // 同步 macOS 窗口透明度：opacity=1.0 且 blur=0 时关闭 NSVisualEffectView，
   // 避免 GPU 持续计算窗口背后的模糊合成
   useEffect(() => {
-    SetWindowTranslucency(appearance.opacity, appearance.blur).catch(() => {});
+    void SetWindowTranslucency(appearance.opacity, appearance.blur).catch(() => undefined);
   }, [appearance.opacity, appearance.blur]);
 
   useEffect(() => {
@@ -80,7 +93,7 @@ function App() {
           })
           .catch(() => {
               if (cancelled) return;
-              const platform = typeof navigator !== 'undefined' ? navigator.platform : '';
+              const platform = detectNavigatorPlatform();
               const normalized = /linux/i.test(platform)
                   ? 'linux'
                   : (/mac/i.test(platform) ? 'darwin' : (/win/i.test(platform) ? 'windows' : ''));
@@ -116,7 +129,7 @@ function App() {
 
       if (invalidWhenEnabled) {
           if (!globalProxyInvalidHintShownRef.current) {
-              message.warning({
+              void message.warning({
                   content: '全局代理已开启，但地址或端口无效，当前按未启用处理',
                   key: 'global-proxy-invalid',
               });
@@ -124,7 +137,7 @@ function App() {
           }
       } else {
           globalProxyInvalidHintShownRef.current = false;
-          message.destroy('global-proxy-invalid');
+          void message.destroy('global-proxy-invalid');
       }
 
       const enabledForBackend = globalProxy.enabled && !invalidWhenEnabled;
@@ -140,7 +153,7 @@ function App() {
               if (cancelled || res?.success) {
                   return;
               }
-              message.error({
+              void message.error({
                   content: '全局代理配置失败: ' + (res?.message || '未知错误'),
                   key: 'global-proxy-sync-error',
               });
@@ -150,7 +163,7 @@ function App() {
                   return;
               }
               const errMsg = err instanceof Error ? err.message : String(err || '未知错误');
-              message.error({
+              void message.error({
                   content: '全局代理配置失败: ' + errMsg,
                   key: 'global-proxy-sync-error',
               });
@@ -205,18 +218,18 @@ function App() {
               if (!useStore.getState().startupFullscreen) {
                   return;
               }
-              Promise.resolve()
+              void Promise.resolve()
                   .then(async () => {
                       if (await checkStartupPreferenceApplied()) {
                           return;
                       }
                       // 优先尝试全屏，若当前平台/时机不生效，后续走最大化兜底。
-                      WindowFullscreen();
+                      await WindowFullscreen();
                       await new Promise((resolve) => window.setTimeout(resolve, settleDelayMs));
                       if (await checkStartupPreferenceApplied()) {
                           return;
                       }
-                      WindowMaximise();
+                      await WindowMaximise();
                       await new Promise((resolve) => window.setTimeout(resolve, settleDelayMs));
                       if (await checkStartupPreferenceApplied()) {
                           return;
@@ -225,7 +238,7 @@ function App() {
                           applyStartupWindowPreference(attempt + 1);
                       }
                   });
-          }, 300);
+          }, applyRetryDelayMs);
       };
 
       if (useStore.persist.hasHydrated()) {
@@ -248,7 +261,7 @@ function App() {
   }, []);
 
   // Background Helper
-  const getBg = (darkHex: string, lightHex: string) => {
+  const getBg = (darkHex: string) => {
       if (!darkMode) return `rgba(255, 255, 255, ${effectiveOpacity})`; // Light mode usually white
       
       // Parse hex to rgb
@@ -259,8 +272,8 @@ function App() {
       return `rgba(${r}, ${g}, ${b}, ${effectiveOpacity})`;
   };
   // Specific colors
-  const bgMain = getBg('#141414', '#ffffff');
-  const bgContent = getBg('#1d1d1d', '#ffffff');
+  const bgMain = getBg('#141414');
+  const bgContent = getBg('#1d1d1d');
   const floatingLogButtonBorderColor = darkMode ? 'rgba(255,255,255,0.20)' : 'rgba(0,0,0,0.16)';
   const floatingLogButtonTextColor = darkMode ? 'rgba(255,255,255,0.92)' : 'rgba(0,0,0,0.82)';
   const floatingLogButtonBgColor = darkMode
@@ -339,7 +352,7 @@ function App() {
   };
 
   const isMacRuntime = runtimePlatform === 'darwin'
-      || (runtimePlatform === '' && typeof navigator !== 'undefined' && /mac/i.test(navigator.platform));
+      || (runtimePlatform === '' && /mac/i.test(detectNavigatorPlatform()));
 
   const formatBytes = (bytes?: number) => {
       if (!bytes || bytes <= 0) return '0 B';
@@ -358,7 +371,7 @@ function App() {
       if (updateDownloadedVersionRef.current === info.latestVersion) {
           if (!silent) {
               const cachedDownloadPath = updateDownloadMetaRef.current?.downloadPath;
-              message.info(cachedDownloadPath ? `更新包已就绪（${info.latestVersion}），路径：${cachedDownloadPath}` : `更新包已就绪（${info.latestVersion}）`);
+              void message.info(cachedDownloadPath ? `更新包已就绪（${info.latestVersion}），路径：${cachedDownloadPath}` : `更新包已就绪（${info.latestVersion}）`);
               showUpdateDownloadProgress();
           }
           return;
@@ -399,9 +412,9 @@ function App() {
               };
           });
           if (resultData?.downloadPath) {
-              message.success({ content: `更新下载完成，更新包路径：${resultData.downloadPath}`, duration: 5 });
+              void message.success({ content: `更新下载完成，更新包路径：${resultData.downloadPath}`, duration: 5 });
           } else {
-              message.success({ content: '更新下载完成', duration: 2 });
+              void message.success({ content: '更新下载完成', duration: 2 });
           }
           setAboutUpdateStatus(`发现新版本 ${info.latestVersion}（已下载，请点击“下载进度”后安装）`);
       } else {
@@ -410,7 +423,7 @@ function App() {
               status: 'error',
               message: res?.message || '未知错误'
           }));
-          message.error({ content: '更新下载失败: ' + (res?.message || '未知错误'), duration: 4 });
+          void message.error({ content: '更新下载失败: ' + (res?.message || '未知错误'), duration: 4 });
       }
   }, []);
 
@@ -425,10 +438,6 @@ function App() {
       setUpdateDownloadProgress((prev) => ({ ...prev, open: false }));
   }, []);
 
-  const hasUpdateDownloadProgress = updateDownloadProgress.status === 'start'
-      || updateDownloadProgress.status === 'downloading'
-      || updateDownloadProgress.status === 'done'
-      || updateDownloadProgress.status === 'error';
   const isLatestUpdateDownloaded = Boolean(lastUpdateInfo?.hasUpdate) && (
       Boolean(lastUpdateInfo?.downloaded)
       || (Boolean(lastUpdateInfo?.latestVersion) && updateDownloadedVersionRef.current === lastUpdateInfo?.latestVersion)
@@ -449,17 +458,17 @@ function App() {
       if (isMacRuntime) {
           const res = await (window as any).go.app.App.OpenDownloadedUpdateDirectory();
           if (!res?.success) {
-              message.error('打开安装目录失败: ' + (res?.message || '未知错误'));
+              void message.error('打开安装目录失败: ' + (res?.message || '未知错误'));
               return;
           }
           updateInstallTriggeredVersionRef.current = updateDownloadProgress.version || lastUpdateInfo?.latestVersion || null;
           hideUpdateDownloadProgress();
-          message.success(res?.message || '已打开安装目录，请手动完成替换');
+          void message.success(res?.message || '已打开安装目录，请手动完成替换');
           return;
       }
       const res = await (window as any).go.app.App.InstallUpdateAndRestart();
       if (!res?.success) {
-          message.error('更新安装失败: ' + (res?.message || '未知错误'));
+          void message.error('更新安装失败: ' + (res?.message || '未知错误'));
           return;
       }
       updateInstallTriggeredVersionRef.current = updateDownloadProgress.version || lastUpdateInfo?.latestVersion || null;
@@ -476,7 +485,7 @@ function App() {
       updateCheckInFlightRef.current = false;
       if (!res?.success) {
           if (!silent) {
-              message.error('检查更新失败: ' + (res?.message || '未知错误'));
+              void message.error('检查更新失败: ' + (res?.message || '未知错误'));
               setAboutUpdateStatus('检查更新失败: ' + (res?.message || '未知错误'));
           }
           return;
@@ -541,7 +550,7 @@ function App() {
               ? `发现新版本 ${info.latestVersion}（已下载，请点击“下载进度”后安装）`
               : `发现新版本 ${info.latestVersion}（未下载）`;
           if (!silent) {
-              message.info(`发现新版本 ${info.latestVersion}`);
+              void message.info(`发现新版本 ${info.latestVersion}`);
               setAboutUpdateStatus(statusText);
           }
           if (silent && aboutOpen) {
@@ -568,7 +577,7 @@ function App() {
           });
           setLastUpdateInfo(info);
           const text = `当前已是最新版本（${info.currentVersion || '未知'}）`;
-          message.success(text);
+          void message.success(text);
           setAboutUpdateStatus(text);
       } else if (silent && aboutOpen) {
           setUpdateDownloadProgress((prev) => {
@@ -599,7 +608,7 @@ function App() {
       if (res?.success) {
           setAboutInfo(res.data);
       } else {
-          message.error('获取应用信息失败: ' + (res?.message || '未知错误'));
+          void message.error('获取应用信息失败: ' + (res?.message || '未知错误'));
       }
       setAboutLoading(false);
   }, []);
@@ -640,28 +649,28 @@ function App() {
                           count++;
                       }
                   });
-                  message.success(`成功导入 ${count} 个连接`);
+                  void message.success(`成功导入 ${count} 个连接`);
               } else {
-                  message.error("文件格式错误：需要 JSON 数组");
+                  void message.error("文件格式错误：需要 JSON 数组");
               }
           } catch (e) {
-              message.error("解析 JSON 失败");
+              void message.error("解析 JSON 失败");
           }
       } else if (res.message !== "Cancelled") {
-          message.error("导入失败: " + res.message);
+          void message.error("导入失败: " + res.message);
       }
   };
 
   const handleExportConnections = async () => {
       if (connections.length === 0) {
-          message.warning("没有连接可导出");
+          void message.warning("没有连接可导出");
           return;
       }
       const res = await (window as any).go.app.App.ExportData(connections, [], "connections", "json");
       if (res.success) {
-          message.success("导出成功");
+          void message.success("导出成功");
       } else if (res.message !== "Cancelled") {
-          message.error("导出失败: " + res.message);
+          void message.error("导出失败: " + res.message);
       }
   };
 
@@ -790,7 +799,7 @@ function App() {
       if (target?.closest('[data-no-titlebar-toggle="true"]')) {
           return;
       }
-      (window as any).runtime.WindowToggleMaximise();
+      WindowToggleMaximise();
   };
   
   // Sidebar Resizing
@@ -880,16 +889,16 @@ function App() {
           } else {
               setAboutUpdateStatus('未检查');
           }
-          loadAboutInfo();
+          void loadAboutInfo();
       }
   }, [isAboutOpen, lastUpdateInfo, loadAboutInfo]);
 
   useEffect(() => {
       const startupTimer = window.setTimeout(() => {
-          checkForUpdates(true);
+          void checkForUpdates(true);
       }, 2000);
       const interval = window.setInterval(() => {
-          checkForUpdates(true);
+          void checkForUpdates(true);
       }, 30 * 60 * 1000);
       return () => {
           window.clearTimeout(startupTimer);
@@ -1041,13 +1050,13 @@ function App() {
                     type="text" 
                     icon={<MinusOutlined />} 
                     style={{ height: '100%', borderRadius: 0, width: titleBarButtonWidth }} 
-                    onClick={() => (window as any).runtime.WindowMinimise()} 
+                    onClick={WindowMinimise} 
                   />
                   <Button 
                     type="text" 
                     icon={<BorderOutlined />} 
                     style={{ height: '100%', borderRadius: 0, width: titleBarButtonWidth }} 
-                    onClick={() => (window as any).runtime.WindowToggleMaximise()} 
+                    onClick={WindowToggleMaximise} 
                   />
                   <Button 
                     type="text" 
@@ -1055,7 +1064,7 @@ function App() {
                     danger
                     className="titlebar-close-btn"
                     style={{ height: '100%', borderRadius: 0, width: titleBarButtonWidth }} 
-                    onClick={() => (window as any).runtime.Quit()} 
+                    onClick={Quit} 
                   />
               </div>
           </div>
@@ -1216,7 +1225,7 @@ function App() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <GithubOutlined />
                         {aboutInfo?.repoUrl ? (
-                        <a onClick={(e) => { e.preventDefault(); (window as any).runtime.BrowserOpenURL(aboutInfo.repoUrl); }} href={aboutInfo.repoUrl}>
+                        <a onClick={(e) => { e.preventDefault(); if (aboutInfo?.repoUrl) BrowserOpenURL(aboutInfo.repoUrl); }} href={aboutInfo.repoUrl}>
                             {aboutInfo.repoUrl}
                         </a>
                     ) : '未知'}
@@ -1224,7 +1233,7 @@ function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <BugOutlined />
                     {aboutInfo?.issueUrl ? (
-                        <a onClick={(e) => { e.preventDefault(); (window as any).runtime.BrowserOpenURL(aboutInfo.issueUrl); }} href={aboutInfo.issueUrl}>
+                        <a onClick={(e) => { e.preventDefault(); if (aboutInfo?.issueUrl) BrowserOpenURL(aboutInfo.issueUrl); }} href={aboutInfo.issueUrl}>
                             {aboutInfo.issueUrl}
                         </a>
                     ) : '未知'}
@@ -1232,7 +1241,7 @@ function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <CloudDownloadOutlined />
                     {aboutInfo?.releaseUrl ? (
-                        <a onClick={(e) => { e.preventDefault(); (window as any).runtime.BrowserOpenURL(aboutInfo.releaseUrl); }} href={aboutInfo.releaseUrl}>
+                        <a onClick={(e) => { e.preventDefault(); if (aboutInfo?.releaseUrl) BrowserOpenURL(aboutInfo.releaseUrl); }} href={aboutInfo.releaseUrl}>
                             {aboutInfo.releaseUrl}
                         </a>
                     ) : '未知'}
