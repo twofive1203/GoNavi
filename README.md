@@ -200,11 +200,11 @@ If you use Linux artifacts with the `-WebKit41` suffix, prefer Debian 13 / Ubunt
 
 Issues and pull requests are welcome.
 
-1. Fork the repository.
-2. Create a feature branch.
-3. Commit your changes.
-4. Push to your branch.
-5. Open a pull request.
+For the full workflow, branch model, and maintainer sync rules, see:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+
+External contributors should open pull requests directly against `main`.
 
 ## License
 

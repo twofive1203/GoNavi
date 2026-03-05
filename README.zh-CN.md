@@ -183,11 +183,11 @@ sudo apt-get install -y libgtk-3-0 libwebkit2gtk-4.0-37 libjavascriptcoregtk-4.0
 
 欢迎提交 Issue 与 Pull Request。
 
-1. Fork 本仓库。
-2. 创建特性分支。
-3. 提交改动。
-4. 推送分支。
-5. 发起 Pull Request。
+完整流程、分支模型与维护者同步规则请查看：
+
+- [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)
+
+外部贡献者统一直接向 `main` 发起 Pull Request。
 
 ## 开源协议
 
