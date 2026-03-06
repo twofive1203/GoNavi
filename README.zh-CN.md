@@ -147,6 +147,7 @@ wails build -clean
 ### 跨平台发布（GitHub Actions）
 
 仓库内置发布流水线，推送 `v*` Tag 可自动构建并发布 Release。
+Release 更新说明会基于已合并 Pull Request 自动生成，并按 `.github/release.yaml` 分类。
 
 支持目标：
 - macOS (AMD64 / ARM64)

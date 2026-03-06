@@ -154,6 +154,7 @@ Artifacts are generated in `build/bin`.
 
 The repository includes a release workflow.
 Push a `v*` tag to trigger automated build and release.
+Release notes are generated automatically from merged pull requests and categorized by `.github/release.yaml`.
 
 Target artifacts include:
 - macOS (AMD64 / ARM64)
