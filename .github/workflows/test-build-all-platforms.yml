@@ -1,0 +1,342 @@
+﻿name: Test Build All Platforms (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_label:
+        description: "测试包标识（仅用于文件名）"
+        required: false
+        default: "test"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin/amd64
+            os_name: MacOS
+            arch_name: Amd64
+            build_name: gonavi-test-darwin-amd64
+            wails_tags: ""
+            artifact_suffix: ""
+            build_optional_agents: true
+            linux_webkit: ""
+          - os: macos-latest
+            platform: darwin/arm64
+            os_name: MacOS
+            arch_name: Arm64
+            build_name: gonavi-test-darwin-arm64
+            wails_tags: ""
+            artifact_suffix: ""
+            build_optional_agents: true
+            linux_webkit: ""
+          - os: windows-latest
+            platform: windows/amd64
+            os_name: Windows
+            arch_name: Amd64
+            build_name: gonavi-test-windows-amd64
+            wails_tags: ""
+            artifact_suffix: ""
+            build_optional_agents: true
+            linux_webkit: ""
+          - os: windows-latest
+            platform: windows/arm64
+            os_name: Windows
+            arch_name: Arm64
+            build_name: gonavi-test-windows-arm64
+            wails_tags: ""
+            artifact_suffix: ""
+            build_optional_agents: true
+            linux_webkit: ""
+          - os: ubuntu-22.04
+            platform: linux/amd64
+            os_name: Linux
+            arch_name: Amd64
+            build_name: gonavi-test-linux-amd64
+            wails_tags: ""
+            artifact_suffix: ""
+            build_optional_agents: true
+            linux_webkit: "4.0"
+          - os: ubuntu-24.04
+            platform: linux/amd64
+            os_name: Linux
+            arch_name: Amd64
+            build_name: gonavi-test-linux-amd64-webkit41
+            wails_tags: "webkit2_41"
+            artifact_suffix: "-WebKit41"
+            build_optional_agents: false
+            linux_webkit: "4.1"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Linux Dependencies
+        if: contains(matrix.platform, 'linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev
+
+          if [ "${{ matrix.linux_webkit }}" = "4.1" ]; then
+            sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev
+          else
+            sudo apt-get install -y libwebkit2gtk-4.0-dev
+          fi
+
+          sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || true
+
+          LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          PLUGIN_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/releases/download/continuous/linuxdeploy-plugin-gtk-x86_64.AppImage"
+
+          wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 --tries=3 -O /tmp/linuxdeploy "$LINUXDEPLOY_URL" || {
+            echo "skip-appimage=true" >> "$GITHUB_ENV"
+          }
+          wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 --tries=3 -O /tmp/linuxdeploy-plugin-gtk "$PLUGIN_URL" || {
+            echo "skip-appimage=true" >> "$GITHUB_ENV"
+          }
+
+          if [ "${skip-appimage:-false}" != "true" ]; then
+            chmod +x /tmp/linuxdeploy /tmp/linuxdeploy-plugin-gtk
+          fi
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      - name: Setup MSYS2 Toolchain For DuckDB (Windows AMD64)
+        id: msys2_duckdb
+        if: ${{ matrix.build_optional_agents && matrix.platform == 'windows/amd64' }}
+        continue-on-error: true
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: Configure DuckDB CGO Toolchain (Windows AMD64)
+        if: ${{ matrix.build_optional_agents && matrix.platform == 'windows/amd64' }}
+        shell: pwsh
+        run: |
+          function Find-MingwBin([string[]]$candidates) {
+            foreach ($bin in $candidates) {
+              if ([string]::IsNullOrWhiteSpace($bin)) {
+                continue
+              }
+              $gcc = Join-Path $bin 'gcc.exe'
+              $gxx = Join-Path $bin 'g++.exe'
+              if ((Test-Path $gcc) -and (Test-Path $gxx)) {
+                return $bin
+              }
+            }
+            return $null
+          }
+
+          $msys2Location = "${{ steps.msys2_duckdb.outputs['msys2-location'] }}"
+          $candidateBins = @()
+          if (-not [string]::IsNullOrWhiteSpace($msys2Location)) {
+            $candidateBins += Join-Path $msys2Location 'ucrt64\bin'
+          }
+          $candidateBins += @(
+            'C:\msys64\ucrt64\bin',
+            'D:\a\_temp\msys64\ucrt64\bin'
+          )
+          $candidateBins = @($candidateBins | Select-Object -Unique)
+
+          $mingwBin = Find-MingwBin $candidateBins
+          if (-not $mingwBin) {
+            Write-Error "❌ 未找到可用的 DuckDB UCRT64 编译器。"
+            exit 1
+          }
+
+          $gcc = Join-Path $mingwBin 'gcc.exe'
+          $gxx = Join-Path $mingwBin 'g++.exe'
+          "$mingwBin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "CC=$gcc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CXX=$gxx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build App
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_LABEL="${{ inputs.build_label }}"
+          if [ -z "$BUILD_LABEL" ]; then
+            BUILD_LABEL="test"
+          fi
+          APP_VERSION="${BUILD_LABEL}-${GITHUB_RUN_NUMBER}"
+          if [ -n "${{ matrix.wails_tags }}" ]; then
+            wails build -platform "${{ matrix.platform }}" -clean -o "${{ matrix.build_name }}" -tags "${{ matrix.wails_tags }}" -ldflags "-s -w -X GoNavi-Wails/internal/app.AppVersion=${APP_VERSION}"
+          else
+            wails build -platform "${{ matrix.platform }}" -clean -o "${{ matrix.build_name }}" -ldflags "-s -w -X GoNavi-Wails/internal/app.AppVersion=${APP_VERSION}"
+          fi
+
+      - name: Build Optional Driver Agents
+        if: ${{ matrix.build_optional_agents }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET_PLATFORM="${{ matrix.platform }}"
+          GOOS="${TARGET_PLATFORM%%/*}"
+          GOARCH="${TARGET_PLATFORM##*/}"
+          DRIVERS=(mariadb doris sphinx sqlserver sqlite duckdb dameng kingbase highgo vastbase mongodb tdengine clickhouse)
+          OUTDIR="drivers/${{ matrix.os_name }}"
+          mkdir -p "$OUTDIR"
+
+          for DRIVER in "${DRIVERS[@]}"; do
+            BUILD_DRIVER="$DRIVER"
+            if [ "$DRIVER" = "doris" ]; then
+              BUILD_DRIVER="diros"
+            fi
+            if [ "$DRIVER" = "duckdb" ] && [ "$GOOS" = "windows" ] && [ "$GOARCH" != "amd64" ]; then
+              echo "跳过 DuckDB driver: ${GOOS}/${GOARCH}"
+              continue
+            fi
+            TAG="gonavi_${BUILD_DRIVER}_driver"
+            OUTPUT="${DRIVER}-driver-agent-${GOOS}-${GOARCH}"
+            if [ "$GOOS" = "windows" ]; then
+              OUTPUT="${OUTPUT}.exe"
+            fi
+            OUTPUT_PATH="${OUTDIR}/${OUTPUT}"
+            if [ "$DRIVER" = "duckdb" ]; then
+              CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build -tags "$TAG" -trimpath -ldflags "-s -w" -o "$OUTPUT_PATH" ./cmd/optional-driver-agent
+            else
+              CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -tags "$TAG" -trimpath -ldflags "-s -w" -o "$OUTPUT_PATH" ./cmd/optional-driver-agent
+            fi
+          done
+
+      - name: Package macOS
+        if: contains(matrix.platform, 'darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install create-dmg
+          LABEL="${{ inputs.build_label }}"
+          if [ -z "$LABEL" ]; then
+            LABEL="test"
+          fi
+          cd build/bin
+          APP_PATH=$(find . -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "未找到 .app 应用包"
+            exit 1
+          fi
+          APP_NAME=$(basename "$APP_PATH")
+          codesign --force --deep --sign - "$APP_NAME"
+          ZIP_NAME="GoNavi-${LABEL}-${{ matrix.os_name }}-${{ matrix.arch_name }}-run${GITHUB_RUN_NUMBER}.zip"
+          DMG_NAME="GoNavi-${LABEL}-${{ matrix.os_name }}-${{ matrix.arch_name }}-run${GITHUB_RUN_NUMBER}.dmg"
+          mkdir -p ../../artifacts
+          ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "../../artifacts/$ZIP_NAME"
+          create-dmg \
+            --volname "GoNavi Test Installer" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "$APP_NAME" 200 190 \
+            --hide-extension "$APP_NAME" \
+            --app-drop-link 600 185 \
+            "$DMG_NAME" \
+            "$APP_NAME"
+          mv "$DMG_NAME" "../../artifacts/$DMG_NAME"
+          shasum -a 256 "../../artifacts/$ZIP_NAME" > "../../artifacts/$ZIP_NAME.sha256"
+          shasum -a 256 "../../artifacts/$DMG_NAME" > "../../artifacts/$DMG_NAME.sha256"
+
+      - name: Package Windows
+        if: contains(matrix.platform, 'windows')
+        shell: pwsh
+        run: |
+          $label = "${{ inputs.build_label }}"
+          if ([string]::IsNullOrWhiteSpace($label)) { $label = 'test' }
+          Set-Location build/bin
+          $target = "${{ matrix.build_name }}"
+          $finalExeName = "GoNavi-$label-${{ matrix.os_name }}-${{ matrix.arch_name }}-run$env:GITHUB_RUN_NUMBER.exe"
+          $finalZipName = "GoNavi-$label-${{ matrix.os_name }}-${{ matrix.arch_name }}-run$env:GITHUB_RUN_NUMBER.zip"
+          if (Test-Path "$target.exe") {
+            $finalExe = "$target.exe"
+          } elseif (Test-Path "$target") {
+            Rename-Item -Path "$target" -NewName "$target.exe"
+            $finalExe = "$target.exe"
+          } else {
+            Write-Error "未找到构建产物 '$target'"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path ..\..\artifacts | Out-Null
+          Copy-Item -LiteralPath $finalExe -Destination "..\..\artifacts\$finalExeName" -Force
+          Compress-Archive -LiteralPath $finalExe -DestinationPath "..\..\artifacts\$finalZipName" -Force
+          Get-FileHash "..\..\artifacts\$finalExeName" -Algorithm SHA256 | ForEach-Object { "{0} *{1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } | Out-File "..\..\artifacts\$finalExeName.sha256" -Encoding ascii
+          Get-FileHash "..\..\artifacts\$finalZipName" -Algorithm SHA256 | ForEach-Object { "{0} *{1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } | Out-File "..\..\artifacts\$finalZipName.sha256" -Encoding ascii
+
+      - name: Package Linux
+        if: contains(matrix.platform, 'linux')
+        shell: bash
+        run: |
+          set -euo pipefail
+          LABEL="${{ inputs.build_label }}"
+          if [ -z "$LABEL" ]; then
+            LABEL="test"
+          fi
+          cd build/bin
+          TARGET="${{ matrix.build_name }}"
+          TAR_NAME="GoNavi-${LABEL}-${{ matrix.os_name }}-${{ matrix.arch_name }}${{ matrix.artifact_suffix }}-run${GITHUB_RUN_NUMBER}.tar.gz"
+          APPIMAGE_NAME="GoNavi-${LABEL}-${{ matrix.os_name }}-${{ matrix.arch_name }}${{ matrix.artifact_suffix }}-run${GITHUB_RUN_NUMBER}.AppImage"
+          mkdir -p ../../artifacts
+
+          if [ ! -f "$TARGET" ]; then
+            echo "未找到构建产物 '$TARGET'"
+            exit 1
+          fi
+          chmod +x "$TARGET"
+          tar -czvf "../../artifacts/$TAR_NAME" "$TARGET"
+          sha256sum "../../artifacts/$TAR_NAME" > "../../artifacts/$TAR_NAME.sha256"
+
+          if [ "${skip-appimage:-false}" = "true" ]; then
+            echo "跳过 AppImage 打包"
+            exit 0
+          fi
+
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+          cp "$TARGET" AppDir/usr/bin/gonavi
+          printf '%s\n' '[Desktop Entry]' 'Name=GoNavi' 'Exec=gonavi' 'Icon=gonavi' 'Type=Application' 'Categories=Development;Database;' 'Comment=Database Management Tool' > AppDir/usr/share/applications/gonavi.desktop
+          cp AppDir/usr/share/applications/gonavi.desktop AppDir/gonavi.desktop
+          if [ -f "../../build/appicon.png" ]; then
+            cp "../../build/appicon.png" AppDir/usr/share/icons/hicolor/256x256/apps/gonavi.png
+            cp "../../build/appicon.png" AppDir/gonavi.png
+          else
+            touch AppDir/gonavi.png
+            cp AppDir/gonavi.png AppDir/usr/share/icons/hicolor/256x256/apps/gonavi.png
+          fi
+          export DEPLOY_GTK_VERSION=3
+          /tmp/linuxdeploy --appdir AppDir --plugin gtk --output appimage || exit 0
+          mv GoNavi*.AppImage "$APPIMAGE_NAME" 2>/dev/null || exit 0
+          mv "$APPIMAGE_NAME" "../../artifacts/$APPIMAGE_NAME"
+          sha256sum "../../artifacts/$APPIMAGE_NAME" > "../../artifacts/$APPIMAGE_NAME.sha256"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build-${{ matrix.os_name }}-${{ matrix.arch_name }}-run${{ github.run_number }}
+          path: |
+            artifacts/*
+            drivers/**
+          if-no-files-found: error
+          retention-days: 7

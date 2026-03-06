@@ -416,12 +416,7 @@ func (a *App) DBQueryWithCancel(config connection.ConnectionConfig, dbName strin
 		a.queryMu.Unlock()
 	}()
 
-	lowerQuery := strings.TrimSpace(strings.ToLower(query))
-	isReadQuery := strings.HasPrefix(lowerQuery, "select") || strings.HasPrefix(lowerQuery, "show") || strings.HasPrefix(lowerQuery, "describe") || strings.HasPrefix(lowerQuery, "explain")
-	// MongoDB JSON 命令中的 find/count/aggregate 也属于读查询
-	if !isReadQuery && strings.ToLower(strings.TrimSpace(runConfig.Type)) == "mongodb" && strings.HasPrefix(strings.TrimSpace(query), "{") {
-		isReadQuery = true
-	}
+	isReadQuery := isReadOnlySQLQuery(runConfig.Type, query)
 
 	runReadQuery := func(inst db.Database) ([]map[string]interface{}, []string, error) {
 		if q, ok := inst.(interface {
@@ -500,11 +495,7 @@ func (a *App) DBQueryIsolated(config connection.ConnectionConfig, dbName string,
 	ctx, cancel := utils.ContextWithTimeout(time.Duration(timeoutSeconds) * time.Second)
 	defer cancel()
 
-	lowerQuery := strings.TrimSpace(strings.ToLower(query))
-	isReadQuery := strings.HasPrefix(lowerQuery, "select") || strings.HasPrefix(lowerQuery, "show") || strings.HasPrefix(lowerQuery, "describe") || strings.HasPrefix(lowerQuery, "explain")
-	if !isReadQuery && strings.ToLower(strings.TrimSpace(runConfig.Type)) == "mongodb" && strings.HasPrefix(strings.TrimSpace(query), "{") {
-		isReadQuery = true
-	}
+	isReadQuery := isReadOnlySQLQuery(runConfig.Type, query)
 
 	if isReadQuery {
 		var data []map[string]interface{}

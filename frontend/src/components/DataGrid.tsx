@@ -2074,9 +2074,14 @@ const DataGrid: React.FC<DataGridProps> = ({
 
   const estimatedVisibleCellCount = mergedDisplayData.length * Math.max(columnNames.length, 1);
   const enableLargeResultOptimizedEditing =
-      viewMode === 'table' && (mergedDisplayData.length >= 60 || estimatedVisibleCellCount >= 4000);
+      viewMode === 'table' && (
+          mergedDisplayData.length >= 60 ||
+          estimatedVisibleCellCount >= 1600 ||
+          columnNames.length >= 36 ||
+          (isMacLike && columnNames.length >= 24)
+      );
   const enableVirtual = enableLargeResultOptimizedEditing;
-  const enableInlineEditableCell = canModifyData;
+  const enableInlineEditableCell = canModifyData && !enableLargeResultOptimizedEditing;
 
   const columns = useMemo(() => {
       return columnNames.map(key => ({

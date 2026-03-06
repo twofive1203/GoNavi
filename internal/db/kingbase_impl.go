@@ -305,10 +305,30 @@ func (k *KingbaseDB) GetColumns(dbName, tableName string) ([]connection.ColumnDe
 		return strings.ReplaceAll(s, "'", "''")
 	}
 
-	query := fmt.Sprintf(`SELECT column_name, data_type, is_nullable, column_default
-		FROM information_schema.columns
-		WHERE table_schema = '%s' AND table_name = '%s'
-		ORDER BY ordinal_position`, esc(schema), esc(table))
+	query := fmt.Sprintf(`
+SELECT
+	a.attname AS column_name,
+	pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+	CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+	pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+	col_description(a.attrelid, a.attnum) AS comment,
+	CASE WHEN pk.attname IS NOT NULL THEN 'PRI' ELSE '' END AS column_key
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = c.oid
+LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+LEFT JOIN (
+	SELECT i.indrelid, a3.attname
+	FROM pg_index i
+	JOIN pg_attribute a3 ON a3.attrelid = i.indrelid AND a3.attnum = ANY(i.indkey)
+	WHERE i.indisprimary
+) pk ON pk.indrelid = c.oid AND pk.attname = a.attname
+WHERE c.relkind IN ('r', 'p')
+	AND n.nspname = '%s'
+	AND c.relname = '%s'
+	AND a.attnum > 0
+	AND NOT a.attisdropped
+ORDER BY a.attnum`, esc(schema), esc(table))
 
 	data, _, err := k.Query(query)
 	if err != nil {
@@ -321,11 +341,21 @@ func (k *KingbaseDB) GetColumns(dbName, tableName string) ([]connection.ColumnDe
 			Name:     fmt.Sprintf("%v", row["column_name"]),
 			Type:     fmt.Sprintf("%v", row["data_type"]),
 			Nullable: fmt.Sprintf("%v", row["is_nullable"]),
+			Key:      fmt.Sprintf("%v", row["column_key"]),
+			Extra:    "",
+			Comment:  "",
 		}
 
 		if row["column_default"] != nil {
 			def := fmt.Sprintf("%v", row["column_default"])
 			col.Default = &def
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(def)), "nextval(") {
+				col.Extra = "auto_increment"
+			}
+		}
+
+		if v, ok := row["comment"]; ok && v != nil {
+			col.Comment = fmt.Sprintf("%v", v)
 		}
 
 		columns = append(columns, col)
@@ -347,10 +377,30 @@ func (k *KingbaseDB) getColumnsWithCurrentSchema(tableName string) ([]connection
 	}
 
 	// 使用 current_schema() 获取当前schema
-	query := fmt.Sprintf(`SELECT column_name, data_type, is_nullable, column_default
-		FROM information_schema.columns
-		WHERE table_schema = current_schema() AND table_name = '%s'
-		ORDER BY ordinal_position`, esc(table))
+	query := fmt.Sprintf(`
+SELECT
+	a.attname AS column_name,
+	pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+	CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+	pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+	col_description(a.attrelid, a.attnum) AS comment,
+	CASE WHEN pk.attname IS NOT NULL THEN 'PRI' ELSE '' END AS column_key
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = c.oid
+LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+LEFT JOIN (
+	SELECT i.indrelid, a3.attname
+	FROM pg_index i
+	JOIN pg_attribute a3 ON a3.attrelid = i.indrelid AND a3.attnum = ANY(i.indkey)
+	WHERE i.indisprimary
+) pk ON pk.indrelid = c.oid AND pk.attname = a.attname
+WHERE c.relkind IN ('r', 'p')
+	AND n.nspname = current_schema()
+	AND c.relname = '%s'
+	AND a.attnum > 0
+	AND NOT a.attisdropped
+ORDER BY a.attnum`, esc(table))
 
 	data, _, err := k.Query(query)
 	if err != nil {
@@ -363,11 +413,21 @@ func (k *KingbaseDB) getColumnsWithCurrentSchema(tableName string) ([]connection
 			Name:     fmt.Sprintf("%v", row["column_name"]),
 			Type:     fmt.Sprintf("%v", row["data_type"]),
 			Nullable: fmt.Sprintf("%v", row["is_nullable"]),
+			Key:      fmt.Sprintf("%v", row["column_key"]),
+			Extra:    "",
+			Comment:  "",
 		}
 
 		if row["column_default"] != nil {
 			def := fmt.Sprintf("%v", row["column_default"])
 			col.Default = &def
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(def)), "nextval(") {
+				col.Extra = "auto_increment"
+			}
+		}
+
+		if v, ok := row["comment"]; ok && v != nil {
+			col.Comment = fmt.Sprintf("%v", v)
 		}
 
 		columns = append(columns, col)
@@ -650,7 +710,7 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 		}
 		query := fmt.Sprintf("DELETE FROM %s WHERE %s", qualifiedTable, strings.Join(wheres, " AND "))
 		if _, err := tx.Exec(query, args...); err != nil {
-			return fmt.Errorf("delete error: %v", err)
+			return fmt.Errorf("delete error: %v; sql=%s", err, query)
 		}
 	}
 
@@ -683,7 +743,7 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 
 		query := fmt.Sprintf("UPDATE %s SET %s WHERE %s", qualifiedTable, strings.Join(sets, ", "), strings.Join(wheres, " AND "))
 		if _, err := tx.Exec(query, args...); err != nil {
-			return fmt.Errorf("update error: %v", err)
+			return fmt.Errorf("update error: %v; sql=%s", err, query)
 		}
 	}
 
@@ -707,7 +767,7 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 
 		query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", qualifiedTable, strings.Join(cols, ", "), strings.Join(placeholders, ", "))
 		if _, err := tx.Exec(query, args...); err != nil {
-			return fmt.Errorf("insert error: %v", err)
+			return fmt.Errorf("insert error: %v; sql=%s", err, query)
 		}
 	}
 

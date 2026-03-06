@@ -5,6 +5,66 @@ import (
 	"unicode"
 )
 
+func leadingSQLKeyword(query string) string {
+	text := strings.TrimSpace(query)
+	for len(text) > 0 {
+		trimmed := strings.TrimLeft(text, " \t\r\n")
+		if trimmed == "" {
+			return ""
+		}
+		text = trimmed
+
+		switch {
+		case strings.HasPrefix(text, "--"):
+			if idx := strings.IndexByte(text, '\n'); idx >= 0 {
+				text = text[idx+1:]
+				continue
+			}
+			return ""
+		case strings.HasPrefix(text, "#"):
+			if idx := strings.IndexByte(text, '\n'); idx >= 0 {
+				text = text[idx+1:]
+				continue
+			}
+			return ""
+		case strings.HasPrefix(text, "/*"):
+			if idx := strings.Index(text, "*/"); idx >= 0 {
+				text = text[idx+2:]
+				continue
+			}
+			return ""
+		}
+		break
+	}
+
+	if text == "" {
+		return ""
+	}
+	for i, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			continue
+		}
+		if i == 0 {
+			return ""
+		}
+		return strings.ToLower(text[:i])
+	}
+	return strings.ToLower(text)
+}
+
+func isReadOnlySQLQuery(dbType string, query string) bool {
+	if strings.ToLower(strings.TrimSpace(dbType)) == "mongodb" && strings.HasPrefix(strings.TrimSpace(query), "{") {
+		return true
+	}
+
+	switch leadingSQLKeyword(query) {
+	case "select", "with", "show", "describe", "desc", "explain", "pragma", "values":
+		return true
+	default:
+		return false
+	}
+}
+
 func sanitizeSQLForPgLike(dbType string, query string) string {
 	switch strings.ToLower(strings.TrimSpace(dbType)) {
 	case "postgres", "kingbase", "highgo", "vastbase":
