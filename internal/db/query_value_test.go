@@ -2,7 +2,9 @@ package db
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 )
 
 type duckMapLike map[any]any
@@ -163,5 +165,33 @@ func TestNormalizeQueryValueWithDBType_JSONNumber(t *testing.T) {
 				t.Fatalf("未知断言类型：%s", tc.wantType)
 			}
 		})
+	}
+}
+
+type customStructValue struct {
+	Name string
+	Age  int
+}
+
+func (v customStructValue) String() string {
+	return fmt.Sprintf("%s-%d", v.Name, v.Age)
+}
+
+func TestNormalizeQueryValueWithDBType_StructToString(t *testing.T) {
+	got := normalizeQueryValueWithDBType(customStructValue{Name: "alice", Age: 18}, "")
+	if got != "alice-18" {
+		t.Fatalf("结构体应降级为可读字符串，实际=%v(%T)", got, got)
+	}
+}
+
+func TestNormalizeQueryValueWithDBType_TimeStructToRFC3339(t *testing.T) {
+	input := time.Date(2026, 3, 5, 18, 30, 15, 123456789, time.UTC)
+	got := normalizeQueryValueWithDBType(input, "")
+	text, ok := got.(string)
+	if !ok {
+		t.Fatalf("time.Time 应转为字符串，实际=%v(%T)", got, got)
+	}
+	if text != "2026-03-05T18:30:15.123456789Z" {
+		t.Fatalf("time.Time 规整值异常，实际=%s", text)
 	}
 }

@@ -23,12 +23,20 @@ var (
 
 // getRedisClient gets or creates a Redis client from cache
 func (a *App) getRedisClient(config connection.ConnectionConfig) (redis.RedisClient, error) {
-	key := getRedisClientCacheKey(config)
+	effectiveConfig := applyGlobalProxyToConnection(config)
+	connectConfig, proxyErr := resolveDialConfigWithProxy(effectiveConfig)
+	if proxyErr != nil {
+		wrapped := wrapConnectError(effectiveConfig, proxyErr)
+		logger.Error(wrapped, "Redis 代理准备失败：%s", formatRedisConnSummary(effectiveConfig))
+		return nil, wrapped
+	}
+
+	key := getRedisClientCacheKey(connectConfig)
 	shortKey := key
 	if len(shortKey) > 12 {
 		shortKey = shortKey[:12]
 	}
-	logger.Infof("获取 Redis 连接：%s 缓存Key=%s", formatRedisConnSummary(config), shortKey)
+	logger.Infof("获取 Redis 连接：%s 缓存Key=%s", formatRedisConnSummary(effectiveConfig), shortKey)
 
 	redisCacheMu.Lock()
 	defer redisCacheMu.Unlock()
@@ -47,21 +55,20 @@ func (a *App) getRedisClient(config connection.ConnectionConfig) (redis.RedisCli
 
 	logger.Infof("创建 Redis 客户端实例：缓存Key=%s", shortKey)
 	client := redis.NewRedisClient()
-	if err := client.Connect(config); err != nil {
-		logger.Error(err, "Redis 连接失败：%s 缓存Key=%s", formatRedisConnSummary(config), shortKey)
-		return nil, err
+	if err := client.Connect(connectConfig); err != nil {
+		wrapped := wrapConnectError(effectiveConfig, err)
+		logger.Error(wrapped, "Redis 连接失败：%s 缓存Key=%s", formatRedisConnSummary(effectiveConfig), shortKey)
+		return nil, wrapped
 	}
 
 	redisCache[key] = client
-	logger.Infof("Redis 连接成功并写入缓存：%s 缓存Key=%s", formatRedisConnSummary(config), shortKey)
+	logger.Infof("Redis 连接成功并写入缓存：%s 缓存Key=%s", formatRedisConnSummary(effectiveConfig), shortKey)
 	return client, nil
 }
 
 func getRedisClientCacheKey(config connection.ConnectionConfig) string {
-	if !config.UseSSH {
-		config.SSH = connection.SSHConfig{}
-	}
-	b, _ := json.Marshal(config)
+	normalized := normalizeCacheKeyConfig(config)
+	b, _ := json.Marshal(normalized)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
@@ -90,6 +97,26 @@ func formatRedisConnSummary(config connection.ConnectionConfig) string {
 		b.WriteString(strconv.Itoa(config.SSH.Port))
 		b.WriteString(" 用户=")
 		b.WriteString(config.SSH.User)
+	}
+	if config.UseProxy {
+		b.WriteString(" 代理=")
+		b.WriteString(strings.ToLower(strings.TrimSpace(config.Proxy.Type)))
+		b.WriteString("://")
+		b.WriteString(config.Proxy.Host)
+		b.WriteString(":")
+		b.WriteString(strconv.Itoa(config.Proxy.Port))
+		if strings.TrimSpace(config.Proxy.User) != "" {
+			b.WriteString(" 代理认证=已配置")
+		}
+	}
+	if config.UseHTTPTunnel {
+		b.WriteString(" HTTP隧道=")
+		b.WriteString(strings.TrimSpace(config.HTTPTunnel.Host))
+		b.WriteString(":")
+		b.WriteString(strconv.Itoa(config.HTTPTunnel.Port))
+		if strings.TrimSpace(config.HTTPTunnel.User) != "" {
+			b.WriteString(" HTTP隧道认证=已配置")
+		}
 	}
 
 	return b.String()

@@ -194,6 +194,9 @@ func optionalGoDriverRuntimeReady(driverType string) (bool, string) {
 	if statErr != nil || info.IsDir() {
 		return false, fmt.Sprintf("%s 驱动代理缺失，请在驱动管理中重新安装启用", driverDisplayName(normalized))
 	}
+	if validateErr := ValidateOptionalDriverAgentExecutable(normalized, executablePath); validateErr != nil {
+		return false, fmt.Sprintf("%s；请在驱动管理中重新安装启用", validateErr.Error())
+	}
 	return true, ""
 }
 

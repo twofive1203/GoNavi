@@ -231,6 +231,18 @@ const sanitizeConnectionConfig = (value: unknown): ConnectionConfig => {
     user: toTrimmedString(proxyRaw.user),
     password: toTrimmedString(proxyRaw.password),
   };
+  const httpTunnelRaw = (raw.httpTunnel && typeof raw.httpTunnel === 'object')
+    ? raw.httpTunnel as Record<string, unknown>
+    : ((raw.HTTPTunnel && typeof raw.HTTPTunnel === 'object') ? raw.HTTPTunnel as Record<string, unknown> : {});
+  const httpTunnel = {
+    host: toTrimmedString(httpTunnelRaw.host ?? raw.httpTunnelHost),
+    port: normalizePort(httpTunnelRaw.port ?? raw.httpTunnelPort, 8080),
+    user: toTrimmedString(httpTunnelRaw.user ?? raw.httpTunnelUser),
+    password: toTrimmedString(httpTunnelRaw.password ?? raw.httpTunnelPassword),
+  };
+  const supportsNetworkTunnel = type !== 'sqlite' && type !== 'duckdb';
+  const useHttpTunnel = supportsNetworkTunnel && (raw.useHttpTunnel === true || raw.UseHTTPTunnel === true);
+  const useProxy = supportsNetworkTunnel && !!raw.useProxy && !useHttpTunnel;
 
   const safeConfig: ConnectionConfig & Record<string, unknown> = {
     ...raw,
@@ -247,8 +259,10 @@ const sanitizeConnectionConfig = (value: unknown): ConnectionConfig => {
     sslKeyPath: sslCapable ? toTrimmedString(raw.sslKeyPath) : '',
     useSSH: !!raw.useSSH,
     ssh,
-    useProxy: !!raw.useProxy,
+    useProxy,
     proxy,
+    useHttpTunnel,
+    httpTunnel,
     uri: toTrimmedString(raw.uri).slice(0, MAX_URI_LENGTH),
     hosts: sanitizeAddressList(raw.hosts),
     topology: raw.topology === 'replica' ? 'replica' : (raw.topology === 'cluster' ? 'cluster' : 'single'),

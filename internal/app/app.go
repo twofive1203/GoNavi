@@ -96,6 +96,9 @@ func normalizeCacheKeyConfig(config connection.ConnectionConfig) connection.Conn
 	if !normalized.UseProxy {
 		normalized.Proxy = connection.ProxyConfig{}
 	}
+	if !normalized.UseHTTPTunnel {
+		normalized.HTTPTunnel = connection.HTTPTunnelConfig{}
+	}
 
 	if isFileDatabaseType(normalized.Type) {
 		dsn := strings.TrimSpace(normalized.Host)
@@ -124,6 +127,8 @@ func normalizeCacheKeyConfig(config connection.ConnectionConfig) connection.Conn
 		normalized.MongoAuthMechanism = ""
 		normalized.MongoReplicaUser = ""
 		normalized.MongoReplicaPassword = ""
+		normalized.UseHTTPTunnel = false
+		normalized.HTTPTunnel = connection.HTTPTunnelConfig{}
 	}
 
 	return normalized
@@ -301,6 +306,12 @@ func formatConnSummary(config connection.ConnectionConfig) string {
 		b.WriteString(fmt.Sprintf(" 代理=%s://%s:%d", strings.ToLower(strings.TrimSpace(config.Proxy.Type)), config.Proxy.Host, config.Proxy.Port))
 		if strings.TrimSpace(config.Proxy.User) != "" {
 			b.WriteString(" 代理认证=已配置")
+		}
+	}
+	if config.UseHTTPTunnel {
+		b.WriteString(fmt.Sprintf(" HTTP隧道=%s:%d", strings.TrimSpace(config.HTTPTunnel.Host), config.HTTPTunnel.Port))
+		if strings.TrimSpace(config.HTTPTunnel.User) != "" {
+			b.WriteString(" HTTP隧道认证=已配置")
 		}
 	}
 

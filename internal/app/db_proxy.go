@@ -12,8 +12,35 @@ import (
 
 func resolveDialConfigWithProxy(raw connection.ConnectionConfig) (connection.ConnectionConfig, error) {
 	config := raw
+	if config.UseHTTPTunnel {
+		if config.UseProxy {
+			return connection.ConnectionConfig{}, fmt.Errorf("HTTP 隧道与普通代理不能同时启用")
+		}
+		tunnelHost := strings.TrimSpace(config.HTTPTunnel.Host)
+		if tunnelHost == "" {
+			return connection.ConnectionConfig{}, fmt.Errorf("HTTP 隧道主机不能为空")
+		}
+		tunnelPort := config.HTTPTunnel.Port
+		if tunnelPort <= 0 {
+			tunnelPort = 8080
+		}
+		if tunnelPort > 65535 {
+			return connection.ConnectionConfig{}, fmt.Errorf("HTTP 隧道端口无效：%d", config.HTTPTunnel.Port)
+		}
+
+		config.UseProxy = true
+		config.Proxy = connection.ProxyConfig{
+			Type:     "http",
+			Host:     tunnelHost,
+			Port:     tunnelPort,
+			User:     strings.TrimSpace(config.HTTPTunnel.User),
+			Password: config.HTTPTunnel.Password,
+		}
+	}
 	if !config.UseProxy {
 		config.Proxy = connection.ProxyConfig{}
+		config.UseHTTPTunnel = false
+		config.HTTPTunnel = connection.HTTPTunnelConfig{}
 		return config, nil
 	}
 
@@ -22,6 +49,8 @@ func resolveDialConfigWithProxy(raw connection.ConnectionConfig) (connection.Con
 		return connection.ConnectionConfig{}, err
 	}
 	config.Proxy = normalizedProxy
+	config.UseHTTPTunnel = false
+	config.HTTPTunnel = connection.HTTPTunnelConfig{}
 
 	if config.UseSSH {
 		sshPort := config.SSH.Port

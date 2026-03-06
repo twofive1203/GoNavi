@@ -65,11 +65,22 @@ func TestManagedDriverRequiresInstallMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("解析 mariadb 代理路径失败: %v", err)
 	}
-	if err := os.WriteFile(executablePath, []byte("placeholder"), 0o755); err != nil {
-		t.Fatalf("写入 mariadb 代理占位文件失败: %v", err)
-	}
 	if runtime.GOOS == "windows" {
-		_ = os.Chmod(executablePath, 0o644)
+		selfPath, selfErr := os.Executable()
+		if selfErr != nil {
+			t.Fatalf("获取测试进程路径失败: %v", selfErr)
+		}
+		content, readErr := os.ReadFile(selfPath)
+		if readErr != nil {
+			t.Fatalf("读取测试进程失败: %v", readErr)
+		}
+		if err := os.WriteFile(executablePath, content, 0o755); err != nil {
+			t.Fatalf("写入 mariadb 代理占位可执行文件失败: %v", err)
+		}
+	} else {
+		if err := os.WriteFile(executablePath, []byte("placeholder"), 0o755); err != nil {
+			t.Fatalf("写入 mariadb 代理占位文件失败: %v", err)
+		}
 	}
 
 	supported, reason := DriverRuntimeSupportStatus("mariadb")

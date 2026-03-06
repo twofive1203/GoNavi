@@ -623,28 +623,16 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 	}
 	defer tx.Rollback()
 
-	quoteIdent := func(name string) string {
-		n := strings.TrimSpace(name)
-		n = strings.Trim(n, "\"")
-		n = strings.ReplaceAll(n, "\"", "\"\"")
-		if n == "" {
-			return "\"\""
-		}
-		return `"` + n + `"`
-	}
-
-	schema := ""
-	table := strings.TrimSpace(tableName)
-	if parts := strings.SplitN(table, ".", 2); len(parts) == 2 {
-		schema = strings.TrimSpace(parts[0])
-		table = strings.TrimSpace(parts[1])
+	schema, table := splitKingbaseQualifiedTable(tableName)
+	if table == "" {
+		return fmt.Errorf("table name required")
 	}
 
 	qualifiedTable := ""
 	if schema != "" {
-		qualifiedTable = fmt.Sprintf("%s.%s", quoteIdent(schema), quoteIdent(table))
+		qualifiedTable = fmt.Sprintf("%s.%s", quoteKingbaseIdent(schema), quoteKingbaseIdent(table))
 	} else {
-		qualifiedTable = quoteIdent(table)
+		qualifiedTable = quoteKingbaseIdent(table)
 	}
 
 	// 1. Deletes
@@ -654,7 +642,7 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 		idx := 0
 		for k, v := range pk {
 			idx++
-			wheres = append(wheres, fmt.Sprintf("%s = $%d", quoteIdent(k), idx))
+			wheres = append(wheres, fmt.Sprintf("%s = $%d", quoteKingbaseIdent(k), idx))
 			args = append(args, v)
 		}
 		if len(wheres) == 0 {
@@ -674,7 +662,7 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 
 		for k, v := range update.Values {
 			idx++
-			sets = append(sets, fmt.Sprintf("%s = $%d", quoteIdent(k), idx))
+			sets = append(sets, fmt.Sprintf("%s = $%d", quoteKingbaseIdent(k), idx))
 			args = append(args, v)
 		}
 
@@ -685,7 +673,7 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 		var wheres []string
 		for k, v := range update.Keys {
 			idx++
-			wheres = append(wheres, fmt.Sprintf("%s = $%d", quoteIdent(k), idx))
+			wheres = append(wheres, fmt.Sprintf("%s = $%d", quoteKingbaseIdent(k), idx))
 			args = append(args, v)
 		}
 
@@ -708,7 +696,7 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 
 		for k, v := range row {
 			idx++
-			cols = append(cols, quoteIdent(k))
+			cols = append(cols, quoteKingbaseIdent(k))
 			placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
 			args = append(args, v)
 		}
@@ -724,6 +712,67 @@ func (k *KingbaseDB) ApplyChanges(tableName string, changes connection.ChangeSet
 	}
 
 	return tx.Commit()
+}
+
+func normalizeKingbaseIdentifier(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+
+	// 兼容 JSON/字符串转义后传入的标识符：\"schema\" -> "schema"
+	value = strings.ReplaceAll(value, `\"`, `"`)
+	value = strings.TrimSpace(value)
+
+	// 兼容异常多重包裹引号（例如 ""schema""、""""schema""""）。
+	// strings.Trim 会移除两端连续引号，迭代后可收敛到纯标识符。
+	for i := 0; i < 4; i++ {
+		next := strings.TrimSpace(strings.Trim(value, `"`))
+		if next == value {
+			break
+		}
+		value = next
+	}
+
+	// 兼容其他方言可能残留的引用形式
+	if len(value) >= 2 && strings.HasPrefix(value, "`") && strings.HasSuffix(value, "`") {
+		value = strings.TrimSpace(strings.Trim(value, "`"))
+	}
+	if len(value) >= 2 && strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+	}
+
+	return value
+}
+
+func quoteKingbaseIdent(name string) string {
+	n := normalizeKingbaseIdentifier(name)
+	n = strings.ReplaceAll(n, `"`, `""`)
+	if n == "" {
+		return "\"\""
+	}
+	return `"` + n + `"`
+}
+
+func splitKingbaseQualifiedTable(tableName string) (schema string, table string) {
+	raw := strings.TrimSpace(tableName)
+	if raw == "" {
+		return "", ""
+	}
+
+	if parts := strings.SplitN(raw, ".", 2); len(parts) == 2 {
+		schema = normalizeKingbaseIdentifier(parts[0])
+		table = normalizeKingbaseIdentifier(parts[1])
+		if table == "" {
+			return "", normalizeKingbaseIdentifier(raw)
+		}
+		if schema == "" {
+			return "", table
+		}
+		return schema, table
+	}
+
+	return "", normalizeKingbaseIdentifier(raw)
 }
 
 func (k *KingbaseDB) GetAllColumns(dbName string) ([]connection.ColumnDefinitionWithTable, error) {

@@ -2536,6 +2536,9 @@ func installOptionalDriverAgentFromLocalPath(definition driverDefinition, filePa
 			return installedDriverPackage{}, fmt.Errorf("导入本地驱动代理失败：%w", copyErr)
 		}
 	}
+	if validateErr := db.ValidateOptionalDriverAgentExecutable(driverType, executablePath); validateErr != nil {
+		return installedDriverPackage{}, validateErr
+	}
 
 	hash, hashErr := hashFileSHA256(executablePath)
 	if hashErr != nil {
@@ -2793,11 +2796,15 @@ func ensureOptionalDriverAgentBinary(a *App, definition driverDefinition, execut
 
 	info, err := os.Stat(executablePath)
 	if err == nil && !info.IsDir() {
-		hash, hashErr := hashFileSHA256(executablePath)
-		if hashErr != nil {
-			return "", "", fmt.Errorf("读取已安装 %s 驱动代理摘要失败：%w", displayName, hashErr)
+		if validateErr := db.ValidateOptionalDriverAgentExecutable(driverType, executablePath); validateErr != nil {
+			_ = os.Remove(executablePath)
+		} else {
+			hash, hashErr := hashFileSHA256(executablePath)
+			if hashErr != nil {
+				return "", "", fmt.Errorf("读取已安装 %s 驱动代理摘要失败：%w", displayName, hashErr)
+			}
+			return fmt.Sprintf("local://existing/%s-driver-agent", driverType), hash, nil
 		}
-		return fmt.Sprintf("local://existing/%s-driver-agent", driverType), hash, nil
 	}
 	if err == nil && info.IsDir() {
 		return "", "", fmt.Errorf("%s 驱动代理路径被目录占用：%s", displayName, executablePath)
@@ -2813,6 +2820,10 @@ func ensureOptionalDriverAgentBinary(a *App, definition driverDefinition, execut
 		if sourcePath, ok := findExistingOptionalDriverAgentCandidate(definition, executablePath); ok {
 			if copyErr := copyAgentBinary(sourcePath, executablePath); copyErr != nil {
 				return "", "", fmt.Errorf("复制预置 %s 驱动代理失败：%w", displayName, copyErr)
+			}
+			if validateErr := db.ValidateOptionalDriverAgentExecutable(driverType, executablePath); validateErr != nil {
+				_ = os.Remove(executablePath)
+				return "", "", validateErr
 			}
 			hash, hashErr := hashFileSHA256(executablePath)
 			if hashErr != nil {
@@ -2900,6 +2911,10 @@ func downloadOptionalDriverAgentBinary(a *App, definition driverDefinition, urlT
 	}
 	if chmodErr := os.Chmod(executablePath, 0o755); chmodErr != nil && stdRuntime.GOOS != "windows" {
 		return "", fmt.Errorf("设置代理权限失败：%w", chmodErr)
+	}
+	if validateErr := db.ValidateOptionalDriverAgentExecutable(driverType, executablePath); validateErr != nil {
+		_ = os.Remove(executablePath)
+		return "", validateErr
 	}
 	return hash, nil
 }
@@ -3008,6 +3023,10 @@ func downloadOptionalDriverAgentFromBundle(a *App, definition driverDefinition, 
 	}
 	if chmodErr := os.Chmod(executablePath, 0o755); chmodErr != nil && stdRuntime.GOOS != "windows" {
 		return "", "", fmt.Errorf("设置驱动代理权限失败：%w", chmodErr)
+	}
+	if validateErr := db.ValidateOptionalDriverAgentExecutable(driverType, executablePath); validateErr != nil {
+		_ = os.Remove(executablePath)
+		return "", "", validateErr
 	}
 	hash, err := hashFileSHA256(executablePath)
 	if err != nil {
@@ -3334,6 +3353,7 @@ func resolveOptionalDriverAgentDownloadURLs(definition driverDefinition, rawURL 
 }
 
 func findExistingOptionalDriverAgentCandidate(definition driverDefinition, targetPath string) (string, bool) {
+	driverType := normalizeDriverType(definition.Type)
 	targetAbs, _ := filepath.Abs(targetPath)
 	candidates := resolveOptionalDriverAgentCandidatePaths(definition)
 	for _, candidate := range candidates {
@@ -3349,9 +3369,13 @@ func findExistingOptionalDriverAgentCandidate(definition driverDefinition, targe
 			continue
 		}
 		info, statErr := os.Stat(absPath)
-		if statErr == nil && !info.IsDir() {
-			return absPath, true
+		if statErr != nil || info.IsDir() {
+			continue
 		}
+		if validateErr := db.ValidateOptionalDriverAgentExecutable(driverType, absPath); validateErr != nil {
+			continue
+		}
+		return absPath, true
 	}
 	return "", false
 }

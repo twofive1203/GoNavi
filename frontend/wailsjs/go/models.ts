@@ -48,6 +48,24 @@ export namespace connection {
 		    return a;
 		}
 	}
+	export class HTTPTunnelConfig {
+	    host: string;
+	    port: number;
+	    user?: string;
+	    password?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HTTPTunnelConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.user = source["user"];
+	        this.password = source["password"];
+	    }
+	}
 	export class ProxyConfig {
 	    type: string;
 	    host: string;
@@ -104,6 +122,8 @@ export namespace connection {
 	    ssh: SSHConfig;
 	    useProxy?: boolean;
 	    proxy?: ProxyConfig;
+	    useHttpTunnel?: boolean;
+	    httpTunnel?: HTTPTunnelConfig;
 	    driver?: string;
 	    dsn?: string;
 	    timeout?: number;
@@ -142,6 +162,8 @@ export namespace connection {
 	        this.ssh = this.convertValues(source["ssh"], SSHConfig);
 	        this.useProxy = source["useProxy"];
 	        this.proxy = this.convertValues(source["proxy"], ProxyConfig);
+	        this.useHttpTunnel = source["useHttpTunnel"];
+	        this.httpTunnel = this.convertValues(source["httpTunnel"], HTTPTunnelConfig);
 	        this.driver = source["driver"];
 	        this.dsn = source["dsn"];
 	        this.timeout = source["timeout"];
@@ -178,6 +200,7 @@ export namespace connection {
 		    return a;
 		}
 	}
+	
 	
 	export class QueryResult {
 	    success: boolean;

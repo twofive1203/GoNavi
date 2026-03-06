@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"GoNavi-Wails/internal/connection"
@@ -94,6 +96,9 @@ func newOptionalDriverAgentClient(driverType string, executablePath string) (*op
 		return nil, fmt.Errorf("创建 %s 驱动代理 stderr 失败：%w", driverDisplayName(driverType), err)
 	}
 	if err := cmd.Start(); err != nil {
+		if isWindowsExecutableMachineMismatch(err) {
+			return nil, fmt.Errorf("启动 %s 驱动代理失败：%w（检测到驱动代理与当前系统架构不兼容，请在驱动管理中重新安装启用）", driverDisplayName(driverType), err)
+		}
 		return nil, fmt.Errorf("启动 %s 驱动代理失败：%w", driverDisplayName(driverType), err)
 	}
 
@@ -105,6 +110,30 @@ func newOptionalDriverAgentClient(driverType string, executablePath string) (*op
 	}
 	go client.captureStderr(stderr)
 	return client, nil
+}
+
+func isWindowsExecutableMachineMismatch(err error) bool {
+	if err == nil || runtime.GOOS != "windows" {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == syscall.Errno(216) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "not compatible with the version of windows") {
+		return true
+	}
+	if strings.Contains(text, "win32") && strings.Contains(text, "compatible") {
+		return true
+	}
+	if strings.Contains(text, "不是有效的win32应用程序") || strings.Contains(text, "无法在win32模式下运行") {
+		return true
+	}
+	return false
 }
 
 func (c *optionalDriverAgentClient) captureStderr(stderr io.Reader) {

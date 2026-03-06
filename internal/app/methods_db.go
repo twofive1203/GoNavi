@@ -547,6 +547,13 @@ func sqlSnippet(query string) string {
 	return q[:max] + "..."
 }
 
+func ensureNonNilSlice[T any](items []T) []T {
+	if items == nil {
+		return make([]T, 0)
+	}
+	return items
+}
+
 func (a *App) DBGetDatabases(config connection.ConnectionConfig) connection.QueryResult {
 	runConfig := normalizeRunConfig(config, "")
 	dbInst, err := a.getDatabase(runConfig)
@@ -571,7 +578,7 @@ func (a *App) DBGetDatabases(config connection.ConnectionConfig) connection.Quer
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	var resData []map[string]string
+	resData := make([]map[string]string, 0, len(dbs))
 	for _, name := range dbs {
 		resData = append(resData, map[string]string{"Database": name})
 	}
@@ -604,7 +611,7 @@ func (a *App) DBGetTables(config connection.ConnectionConfig, dbName string) con
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	var resData []map[string]string
+	resData := make([]map[string]string, 0, len(tables))
 	for _, name := range tables {
 		resData = append(resData, map[string]string{"Table": name})
 	}
@@ -786,7 +793,7 @@ func (a *App) DBGetColumns(config connection.ConnectionConfig, dbName string, ta
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	return connection.QueryResult{Success: true, Data: columns}
+	return connection.QueryResult{Success: true, Data: ensureNonNilSlice(columns)}
 }
 
 func (a *App) DBGetIndexes(config connection.ConnectionConfig, dbName string, tableName string) connection.QueryResult {
@@ -803,7 +810,7 @@ func (a *App) DBGetIndexes(config connection.ConnectionConfig, dbName string, ta
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	return connection.QueryResult{Success: true, Data: indexes}
+	return connection.QueryResult{Success: true, Data: ensureNonNilSlice(indexes)}
 }
 
 func (a *App) DBGetForeignKeys(config connection.ConnectionConfig, dbName string, tableName string) connection.QueryResult {
@@ -820,7 +827,7 @@ func (a *App) DBGetForeignKeys(config connection.ConnectionConfig, dbName string
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	return connection.QueryResult{Success: true, Data: fks}
+	return connection.QueryResult{Success: true, Data: ensureNonNilSlice(fks)}
 }
 
 func (a *App) DBGetTriggers(config connection.ConnectionConfig, dbName string, tableName string) connection.QueryResult {
@@ -837,7 +844,7 @@ func (a *App) DBGetTriggers(config connection.ConnectionConfig, dbName string, t
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	return connection.QueryResult{Success: true, Data: triggers}
+	return connection.QueryResult{Success: true, Data: ensureNonNilSlice(triggers)}
 }
 
 func (a *App) DropView(config connection.ConnectionConfig, dbName string, viewName string) connection.QueryResult {
@@ -975,5 +982,5 @@ func (a *App) DBGetAllColumns(config connection.ConnectionConfig, dbName string)
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	return connection.QueryResult{Success: true, Data: cols}
+	return connection.QueryResult{Success: true, Data: ensureNonNilSlice(cols)}
 }

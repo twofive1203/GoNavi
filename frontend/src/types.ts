@@ -14,6 +14,13 @@ export interface ProxyConfig {
   password?: string;
 }
 
+export interface HTTPTunnelConfig {
+  host: string;
+  port: number;
+  user?: string;
+  password?: string;
+}
+
 export interface ConnectionConfig {
   type: string;
   host: string;
@@ -30,6 +37,8 @@ export interface ConnectionConfig {
   ssh?: SSHConfig;
   useProxy?: boolean;
   proxy?: ProxyConfig;
+  useHttpTunnel?: boolean;
+  httpTunnel?: HTTPTunnelConfig;
   driver?: string;
   dsn?: string;
   timeout?: number;

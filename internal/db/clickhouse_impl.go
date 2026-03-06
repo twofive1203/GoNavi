@@ -107,7 +107,9 @@ func (c *ClickHouseDB) buildClickHouseOptions(config connection.ConnectionConfig
 	if readTimeout < minClickHouseReadTimeout {
 		readTimeout = minClickHouseReadTimeout
 	}
+	protocol := detectClickHouseProtocol(config)
 	opts := &clickhouse.Options{
+		Protocol: protocol,
 		Addr: []string{
 			net.JoinHostPort(config.Host, strconv.Itoa(config.Port)),
 		},
@@ -123,6 +125,46 @@ func (c *ClickHouseDB) buildClickHouseOptions(config connection.ConnectionConfig
 		opts.TLS = tlsConfig
 	}
 	return opts
+}
+
+func detectClickHouseProtocol(config connection.ConnectionConfig) clickhouse.Protocol {
+	uriText := strings.ToLower(strings.TrimSpace(config.URI))
+	if strings.HasPrefix(uriText, "http://") || strings.HasPrefix(uriText, "https://") {
+		return clickhouse.HTTP
+	}
+	if config.Port == 8123 || config.Port == 8443 {
+		return clickhouse.HTTP
+	}
+	return clickhouse.Native
+}
+
+func isClickHouseProtocolMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "unexpected packet [72]") ||
+		(strings.Contains(text, "unexpected packet") && strings.Contains(text, "handshake")) ||
+		strings.Contains(text, "http response to https client") ||
+		strings.Contains(text, "malformed http response")
+}
+
+func withClickHouseProtocol(config connection.ConnectionConfig, protocol clickhouse.Protocol) connection.ConnectionConfig {
+	next := config
+	switch protocol {
+	case clickhouse.HTTP:
+		if next.Port == 0 {
+			next.Port = 8123
+		}
+	default:
+		if next.Port == 0 {
+			next.Port = defaultClickHousePort
+		}
+	}
+	return next
 }
 
 func (c *ClickHouseDB) Connect(config connection.ConnectionConfig) error {
@@ -176,23 +218,41 @@ func (c *ClickHouseDB) Connect(config connection.ConnectionConfig) error {
 
 	var failures []string
 	for idx, attempt := range attempts {
-		c.conn = clickhouse.OpenDB(c.buildClickHouseOptions(attempt))
-		if err := c.Ping(); err != nil {
-			failures = append(failures, fmt.Sprintf("第%d次连接验证失败: %v", idx+1, err))
-			if c.conn != nil {
-				_ = c.conn.Close()
-				c.conn = nil
+		primaryProtocol := detectClickHouseProtocol(attempt)
+		protocols := []clickhouse.Protocol{primaryProtocol}
+		if primaryProtocol == clickhouse.Native {
+			protocols = append(protocols, clickhouse.HTTP)
+		} else {
+			protocols = append(protocols, clickhouse.Native)
+		}
+
+		for pIdx, protocol := range protocols {
+			protocolConfig := withClickHouseProtocol(attempt, protocol)
+			c.conn = clickhouse.OpenDB(c.buildClickHouseOptions(protocolConfig))
+			if err := c.Ping(); err != nil {
+				failures = append(failures, fmt.Sprintf("第%d次连接验证失败(protocol=%s): %v", idx+1, protocol.String(), err))
+				if c.conn != nil {
+					_ = c.conn.Close()
+					c.conn = nil
+				}
+				if pIdx == 0 && !isClickHouseProtocolMismatch(err) {
+					// 首次连接不是协议误配特征，避免无谓重试次协议。
+					break
+				}
+				continue
 			}
-			continue
+			if idx > 0 {
+				logger.Warnf("ClickHouse SSL 优先连接失败，已回退至明文连接")
+			}
+			if pIdx > 0 {
+				logger.Warnf("ClickHouse 已自动切换连接协议为 %s（常见于 8123/8443 HTTP 端口）", protocol.String())
+			}
+			return nil
 		}
-		if idx > 0 {
-			logger.Warnf("ClickHouse SSL 优先连接失败，已回退至明文连接")
-		}
-		return nil
 	}
 
 	_ = c.Close()
-	return fmt.Errorf("连接建立后验证失败：%s", strings.Join(failures, "；"))
+	return fmt.Errorf("连接建立后验证失败（可检查 ClickHouse 端口与协议是否匹配：Native=9000/9440，HTTP=8123/8443）：%s", strings.Join(failures, "；"))
 }
 
 func (c *ClickHouseDB) Close() error {

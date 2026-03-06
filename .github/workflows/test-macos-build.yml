@@ -1,0 +1,91 @@
+name: Test Build macOS (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_label:
+        description: "测试包标识（仅用于文件名）"
+        required: false
+        default: "test"
+  push:
+    branches:
+      - feature/kingbase_opt
+    paths:
+      - ".github/workflows/test-macos-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    name: Build macOS ${{ matrix.arch }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin/amd64
+            arch: amd64
+          - platform: darwin/arm64
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.3"
+          check-latest: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      - name: Build App
+        run: |
+          set -euo pipefail
+          OUTPUT_NAME="gonavi-test-${{ matrix.arch }}"
+          BUILD_LABEL="${{ inputs.build_label }}"
+          if [ -z "$BUILD_LABEL" ]; then
+            BUILD_LABEL="test"
+          fi
+          APP_VERSION="${BUILD_LABEL}-${GITHUB_RUN_NUMBER}"
+          wails build \
+            -platform "${{ matrix.platform }}" \
+            -clean \
+            -o "$OUTPUT_NAME" \
+            -ldflags "-s -w -X GoNavi-Wails/internal/app.AppVersion=${APP_VERSION}"
+
+      - name: Package Zip
+        run: |
+          set -euo pipefail
+          APP_PATH="build/bin/gonavi-test-${{ matrix.arch }}.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH=$(find build/bin -maxdepth 1 -name "*.app" | head -n 1 || true)
+          fi
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "未找到 .app 产物"
+            ls -la build/bin || true
+            exit 1
+          fi
+          LABEL="${{ inputs.build_label }}"
+          if [ -z "$LABEL" ]; then
+            LABEL="test"
+          fi
+          ZIP_NAME="GoNavi-${LABEL}-macos-${{ matrix.arch }}-run${GITHUB_RUN_NUMBER}.zip"
+          mkdir -p artifacts
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "artifacts/$ZIP_NAME"
+          shasum -a 256 "artifacts/$ZIP_NAME" > "artifacts/$ZIP_NAME.sha256"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gonavi-macos-${{ matrix.arch }}-run${{ github.run_number }}
+          path: artifacts/*
+          if-no-files-found: error

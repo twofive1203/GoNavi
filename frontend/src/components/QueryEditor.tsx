@@ -48,6 +48,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
   const [editorHeight, setEditorHeight] = useState(300);
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
+  const lastExternalQueryRef = useRef<string>(tab.query || '');
   const dragRef = useRef<{ startY: number, startHeight: number } | null>(null);
   const tablesRef = useRef<{dbName: string, tableName: string}[]>([]); // Store tables for autocomplete (cross-db)
   const allColumnsRef = useRef<{dbName: string, tableName: string, name: string, type: string}[]>([]); // Store all columns (cross-db)
@@ -95,10 +96,30 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
       connectionsRef.current = connections;
   }, [connections]);
 
+  const getCurrentQuery = () => {
+      const val = editorRef.current?.getValue?.();
+      if (typeof val === 'string') return val;
+      return query || '';
+  };
+
+  const syncQueryToEditor = (sql: string) => {
+      const next = sql || '';
+      setQuery(next);
+      const editor = editorRef.current;
+      if (editor && editor.getValue?.() !== next) {
+          editor.setValue(next);
+      }
+  };
+
   // If opening a saved query, load its SQL
   useEffect(() => {
-      if (tab.query) setQuery(tab.query);
-  }, [tab.query]);
+      const incoming = tab.query || '';
+      if (incoming === lastExternalQueryRef.current) {
+          return;
+      }
+      lastExternalQueryRef.current = incoming;
+      syncQueryToEditor(incoming || 'SELECT * FROM ');
+  }, [tab.id, tab.query]);
 
   // Fetch Database List
   useEffect(() => {
@@ -557,8 +578,8 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
 
   const handleFormat = () => {
       try {
-          const formatted = format(query, { language: 'mysql', keywordCase: sqlFormatOptions.keywordCase });
-          setQuery(formatted);
+          const formatted = format(getCurrentQuery(), { language: 'mysql', keywordCase: sqlFormatOptions.keywordCase });
+          syncQueryToEditor(formatted);
       } catch (e) {
           message.error("格式化失败: SQL 语法可能有误");
       }
@@ -1045,7 +1066,8 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
   };
 
   const handleRun = async () => {
-    if (!query.trim()) return;
+    const currentQuery = getCurrentQuery();
+    if (!currentQuery.trim()) return;
     if (!currentDb) {
         message.error("请先选择数据库");
         return;
@@ -1086,7 +1108,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
     };
 
     try {
-        const rawSQL = getSelectedSQL() || query;
+        const rawSQL = getSelectedSQL() || currentQuery;
         const dbType = String((config as any).type || 'mysql');
         const normalizedDbType = dbType.trim().toLowerCase();
         const normalizedRawSQL = String(rawSQL || '').replace(/；/g, ';');
@@ -1367,7 +1389,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
           saveQuery({
               id: tab.id.startsWith('saved-') ? tab.id : `saved-${Date.now()}`,
               name: values.name,
-              sql: query,
+              sql: getCurrentQuery(),
               connectionId: currentConnectionId,
               dbName: currentDb || tab.dbName || '',
               createdAt: Date.now()
@@ -1512,7 +1534,7 @@ const QueryEditor: React.FC<{ tab: TabData }> = ({ tab }) => {
           height="100%" 
           defaultLanguage="sql" 
           theme={darkMode ? "transparent-dark" : "transparent-light"}
-          value={query} 
+          defaultValue={query}
           onChange={(val) => setQuery(val || '')}
           onMount={handleEditorDidMount}
           options={{ 

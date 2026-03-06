@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Modal, Form, Select, Button, message, Steps, Transfer, Card, Alert, Divider, Typography, Progress, Checkbox, Table, Drawer, Tabs } from 'antd';
 import { useStore } from '../store';
 import { DBGetDatabases, DBGetTables, DataSync, DataSyncAnalyze, DataSyncPreview } from '../../wailsjs/go/app/App';
@@ -29,6 +29,118 @@ type TableOps = {
   selectedInsertPks?: string[];
   selectedUpdatePks?: string[];
   selectedDeletePks?: string[];
+};
+
+const quoteSqlIdent = (dbType: string, ident: string): string => {
+  const raw = String(ident || '').trim();
+  if (!raw) return raw;
+  const t = String(dbType || '').toLowerCase();
+  if (t === 'mysql' || t === 'mariadb' || t === 'diros' || t === 'sphinx' || t === 'clickhouse' || t === 'tdengine') {
+    return `\`${raw.replace(/`/g, '``')}\``;
+  }
+  if (t === 'sqlserver') {
+    return `[${raw.replace(/]/g, ']]')}]`;
+  }
+  return `"${raw.replace(/"/g, '""')}"`;
+};
+
+const quoteSqlTable = (dbType: string, tableName: string): string => {
+  const raw = String(tableName || '').trim();
+  if (!raw) return raw;
+  if (!raw.includes('.')) return quoteSqlIdent(dbType, raw);
+  return raw
+    .split('.')
+    .map((part) => quoteSqlIdent(dbType, part))
+    .join('.');
+};
+
+const toSqlLiteral = (value: any, dbType: string): string => {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'boolean') {
+    const t = String(dbType || '').toLowerCase();
+    if (t === 'sqlserver') return value ? '1' : '0';
+    return value ? 'TRUE' : 'FALSE';
+  }
+  if (value instanceof Date) {
+    return `'${value.toISOString().replace(/'/g, "''")}'`;
+  }
+  if (typeof value === 'object') {
+    try {
+      return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+    } catch {
+      return `'${String(value).replace(/'/g, "''")}'`;
+    }
+  }
+  return `'${String(value).replace(/'/g, "''")}'`;
+};
+
+const buildSqlPreview = (
+  previewData: any,
+  tableName: string,
+  dbType: string,
+  ops?: TableOps,
+): { sqlText: string; statementCount: number } => {
+  if (!previewData || !tableName) return { sqlText: '', statementCount: 0 };
+  const tableExpr = quoteSqlTable(dbType, tableName);
+  const pkCol = String(previewData.pkColumn || 'id');
+  const statements: string[] = [];
+
+  const insertRows = Array.isArray(previewData.inserts) ? previewData.inserts : [];
+  const updateRows = Array.isArray(previewData.updates) ? previewData.updates : [];
+  const deleteRows = Array.isArray(previewData.deletes) ? previewData.deletes : [];
+
+  const selectedInsert = new Set((ops?.selectedInsertPks || []).map((v) => String(v)));
+  const selectedUpdate = new Set((ops?.selectedUpdatePks || []).map((v) => String(v)));
+  const selectedDelete = new Set((ops?.selectedDeletePks || []).map((v) => String(v)));
+
+  if (ops?.insert !== false) {
+    insertRows.forEach((rowWrap: any) => {
+      const pk = String(rowWrap?.pk ?? '');
+      if (selectedInsert.size > 0 && !selectedInsert.has(pk)) return;
+      const row = rowWrap?.row || {};
+      const columns = Object.keys(row);
+      if (columns.length === 0) return;
+      const colExpr = columns.map((c) => quoteSqlIdent(dbType, c)).join(', ');
+      const valExpr = columns.map((c) => toSqlLiteral(row[c], dbType)).join(', ');
+      statements.push(`INSERT INTO ${tableExpr} (${colExpr}) VALUES (${valExpr});`);
+    });
+  }
+
+  if (ops?.update !== false) {
+    updateRows.forEach((rowWrap: any) => {
+      const pk = String(rowWrap?.pk ?? '');
+      if (selectedUpdate.size > 0 && !selectedUpdate.has(pk)) return;
+      const source = rowWrap?.source || {};
+      const changedColumns = Array.isArray(rowWrap?.changedColumns)
+        ? rowWrap.changedColumns
+        : Object.keys(source).filter((k) => k !== pkCol);
+      const setCols = changedColumns.filter((c: string) => String(c) !== pkCol);
+      if (setCols.length === 0) return;
+      const setExpr = setCols
+        .map((c: string) => `${quoteSqlIdent(dbType, c)} = ${toSqlLiteral(source[c], dbType)}`)
+        .join(', ');
+      statements.push(
+        `UPDATE ${tableExpr} SET ${setExpr} WHERE ${quoteSqlIdent(dbType, pkCol)} = ${toSqlLiteral(pk, dbType)};`,
+      );
+    });
+  }
+
+  if (ops?.delete) {
+    deleteRows.forEach((rowWrap: any) => {
+      const pk = String(rowWrap?.pk ?? '');
+      if (selectedDelete.size > 0 && !selectedDelete.has(pk)) return;
+      statements.push(
+        `DELETE FROM ${tableExpr} WHERE ${quoteSqlIdent(dbType, pkCol)} = ${toSqlLiteral(pk, dbType)};`,
+      );
+    });
+  }
+
+  return {
+    sqlText: statements.join('\n'),
+    statementCount: statements.length,
+  };
 };
 
 const DataSyncModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
@@ -152,32 +264,38 @@ const DataSyncModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open,
       setSourceConnId(connId);
       setSourceDb('');
       const conn = connections.find(c => c.id === connId);
-      if (conn) {
-          setLoading(true);
-          try {
-            const res = await DBGetDatabases(normalizeConnConfig(conn) as any);
-            if (res.success) {
-                setSourceDbs((res.data as any[]).map((r: any) => r.Database || r.database || r.username));
-            }
-          } catch(e) { message.error("Failed to fetch source databases"); }
-          setLoading(false);
-      }
+	  if (conn) {
+	      setLoading(true);
+	      try {
+	        const res = await DBGetDatabases(normalizeConnConfig(conn) as any);
+	        if (res.success) {
+	            const dbRows = Array.isArray(res.data) ? res.data : [];
+	            setSourceDbs(dbRows
+	                .map((r: any) => r?.Database || r?.database || r?.username)
+	                .filter((name: any) => typeof name === 'string' && name.trim() !== ''));
+	        }
+	      } catch(e) { message.error("Failed to fetch source databases"); }
+	      setLoading(false);
+	  }
   };
 
   const handleTargetConnChange = async (connId: string) => {
       setTargetConnId(connId);
       setTargetDb('');
       const conn = connections.find(c => c.id === connId);
-      if (conn) {
-          setLoading(true);
-          try {
-            const res = await DBGetDatabases(normalizeConnConfig(conn) as any);
-            if (res.success) {
-                setTargetDbs((res.data as any[]).map((r: any) => r.Database || r.database || r.username));
-            }
-          } catch(e) { message.error("Failed to fetch target databases"); }
-          setLoading(false);
-      }
+	  if (conn) {
+	      setLoading(true);
+	      try {
+	        const res = await DBGetDatabases(normalizeConnConfig(conn) as any);
+	        if (res.success) {
+	            const dbRows = Array.isArray(res.data) ? res.data : [];
+	            setTargetDbs(dbRows
+	                .map((r: any) => r?.Database || r?.database || r?.username)
+	                .filter((name: any) => typeof name === 'string' && name.trim() !== ''));
+	        }
+	      } catch(e) { message.error("Failed to fetch target databases"); }
+	      setLoading(false);
+	  }
   };
 
   const nextToTables = async () => {
@@ -189,14 +307,17 @@ const DataSyncModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open,
       try {
           const conn = connections.find(c => c.id === sourceConnId);
           if (conn) {
-              const config = normalizeConnConfig(conn, sourceDb);
-              const res = await DBGetTables(config as any, sourceDb);
-              if (res.success) {
-                  // DBGetTables returns [{Table: "name"}, ...]
-                  const tables = (res.data as any[]).map((row: any) => row.Table || row.table || row.TABLE_NAME || Object.values(row)[0]);
-                  setAllTables(tables as string[]);
-                  setCurrentStep(1);
-              } else {
+	          const config = normalizeConnConfig(conn, sourceDb);
+	          const res = await DBGetTables(config as any, sourceDb);
+	          if (res.success) {
+	              // DBGetTables returns [{Table: "name"}, ...]
+	              const tableRows = Array.isArray(res.data) ? res.data : [];
+	              const tables = tableRows
+	                  .map((row: any) => row?.Table || row?.table || row?.TABLE_NAME || Object.values(row || {})[0])
+	                  .filter((name: any) => typeof name === 'string' && name.trim() !== '');
+	              setAllTables(tables as string[]);
+	              setCurrentStep(1);
+	          } else {
                   message.error(res.message);
               }
           }
@@ -401,6 +522,13 @@ const DataSyncModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open,
           </div>
       );
   };
+
+  const previewSql = useMemo(() => {
+      if (!previewData || !previewTable) return { sqlText: '', statementCount: 0 };
+      const targetType = String(connections.find(c => c.id === targetConnId)?.config?.type || '');
+      const ops = tableOptions[previewTable] || { insert: true, update: true, delete: false };
+      return buildSqlPreview(previewData, previewTable, targetType, ops);
+  }, [previewData, previewTable, targetConnId, connections, tableOptions]);
 
   return (
     <>
@@ -792,6 +920,51 @@ const DataSyncModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open,
                                             { title: '数据', dataIndex: 'row', key: 'row', render: (v: any) => <pre style={{ margin: 0, maxHeight: 140, overflow: 'auto' }}>{JSON.stringify(v, null, 2)}</pre> }
                                         ]}
                                     />
+                                </div>
+                            )
+                        },
+                        {
+                            key: 'sql',
+                            label: `SQL(${previewSql.statementCount})`,
+                            children: (
+                                <div>
+                                    <Alert
+                                        type="info"
+                                        showIcon
+                                        message="SQL 预览会按当前勾选的插入/更新/删除与行选择范围生成，用于审核确认。"
+                                    />
+                                    <div style={{ marginTop: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <Text type="secondary">共 {previewSql.statementCount} 条语句（预览数据最多 200 条/类型）</Text>
+                                        <Button
+                                            size="small"
+                                            disabled={!previewSql.sqlText}
+                                            onClick={async () => {
+                                                try {
+                                                    await navigator.clipboard.writeText(previewSql.sqlText || '');
+                                                    message.success('SQL 已复制');
+                                                } catch {
+                                                    message.error('复制失败，请手动复制');
+                                                }
+                                            }}
+                                        >
+                                            复制 SQL
+                                        </Button>
+                                    </div>
+                                    <pre
+                                        style={{
+                                            margin: 0,
+                                            padding: 10,
+                                            border: '1px solid #f0f0f0',
+                                            borderRadius: 6,
+                                            background: '#fafafa',
+                                            maxHeight: 420,
+                                            overflow: 'auto',
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-word'
+                                        }}
+                                    >
+                                        {previewSql.sqlText || '-- 当前勾选范围下无 SQL 可预览'}
+                                    </pre>
                                 </div>
                             )
                         }

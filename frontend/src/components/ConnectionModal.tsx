@@ -101,6 +101,7 @@ const ConnectionModal: React.FC<{
   const [useSSL, setUseSSL] = useState(false);
   const [useSSH, setUseSSH] = useState(false);
   const [useProxy, setUseProxy] = useState(false);
+  const [useHttpTunnel, setUseHttpTunnel] = useState(false);
   const [dbType, setDbType] = useState('mysql');
   const [step, setStep] = useState(1); // 1: Select Type, 2: Configure
   const [activeGroup, setActiveGroup] = useState(0); // Active category index in step 1
@@ -1026,6 +1027,8 @@ const ConnectionModal: React.FC<{
               const mysqlIsReplica = String(config.topology || '').toLowerCase() === 'replica' || mysqlReplicaHosts.length > 0;
               const mongoIsReplica = String(config.topology || '').toLowerCase() === 'replica' || mongoHosts.length > 0 || !!config.replicaSet;
               const redisIsCluster = String(config.topology || '').toLowerCase() === 'cluster' || redisHosts.length > 0;
+              const hasHttpTunnel = !!config.useHttpTunnel;
+              const hasProxy = !hasHttpTunnel && !!config.useProxy;
               form.setFieldsValue({
                   type: configType,
                   name: initialValues.name,
@@ -1047,12 +1050,17 @@ const ConnectionModal: React.FC<{
                   sshUser: config.ssh?.user,
                   sshPassword: config.ssh?.password,
                   sshKeyPath: config.ssh?.keyPath,
-                  useProxy: config.useProxy,
+                  useProxy: hasProxy,
                   proxyType: config.proxy?.type || 'socks5',
                   proxyHost: config.proxy?.host,
                   proxyPort: config.proxy?.port,
                   proxyUser: config.proxy?.user,
                   proxyPassword: config.proxy?.password,
+                  useHttpTunnel: hasHttpTunnel,
+                  httpTunnelHost: config.httpTunnel?.host,
+                  httpTunnelPort: config.httpTunnel?.port || 8080,
+                  httpTunnelUser: config.httpTunnel?.user,
+                  httpTunnelPassword: config.httpTunnel?.password,
                   driver: config.driver,
                   dsn: config.dsn,
                   timeout: config.timeout || 30,
@@ -1076,7 +1084,8 @@ const ConnectionModal: React.FC<{
               });
               setUseSSL(!!config.useSSL);
               setUseSSH(config.useSSH || false);
-              setUseProxy(config.useProxy || false);
+              setUseProxy(hasProxy);
+              setUseHttpTunnel(hasHttpTunnel);
               setDbType(configType);
               // 如果是 Redis 编辑模式，设置已保存的 Redis 数据库列表
               if (configType === 'redis') {
@@ -1089,6 +1098,7 @@ const ConnectionModal: React.FC<{
               setUseSSL(false);
               setUseSSH(false);
               setUseProxy(false);
+              setUseHttpTunnel(false);
               setDbType('mysql');
               setActiveGroup(0);
           }
@@ -1140,6 +1150,7 @@ const ConnectionModal: React.FC<{
       setUseSSL(false);
       setUseSSH(false);
       setUseProxy(false);
+      setUseHttpTunnel(false);
       setDbType('mysql');
       setStep(1);
       onClose();
@@ -1185,19 +1196,24 @@ const ConnectionModal: React.FC<{
               ? await RedisConnect(config as any)
               : await TestConnection(config as any);
 
-          if (res.success) {
-              setTestResult({ type: 'success', message: res.message });
-              if (isRedisType) {
-                  setRedisDbList(Array.from({ length: 16 }, (_, i) => i));
-              } else {
-                  // Other databases: fetch database list
-                  const dbRes = await DBGetDatabases(config as any);
-                  if (dbRes.success) {
-                      const dbs = (dbRes.data as any[]).map((row: any) => row.Database || row.database);
-                      setDbList(dbs);
-                  }
-              }
-          } else {
+		  if (res.success) {
+			  setTestResult({ type: 'success', message: res.message });
+			  if (isRedisType) {
+				  setRedisDbList(Array.from({ length: 16 }, (_, i) => i));
+			  } else {
+				  // Other databases: fetch database list
+				  const dbRes = await DBGetDatabases(config as any);
+				  if (dbRes.success) {
+					  const dbRows = Array.isArray(dbRes.data) ? dbRes.data : [];
+					  const dbs = dbRows
+						  .map((row: any) => row?.Database || row?.database)
+						  .filter((name: any) => typeof name === 'string' && name.trim() !== '');
+					  setDbList(dbs);
+				  } else {
+					  setDbList([]);
+				  }
+			  }
+		  } else {
               const failMessage = buildTestFailureMessage(
                   res?.message,
                   '连接被拒绝或参数无效，请检查后重试'
@@ -1388,7 +1404,8 @@ const ConnectionModal: React.FC<{
           password: mergedValues.sshPassword || "",
           keyPath: mergedValues.sshKeyPath || ""
       } : { host: "", port: 22, user: "", password: "", keyPath: "" };
-      const effectiveUseProxy = !isFileDbType && !!mergedValues.useProxy;
+      const effectiveUseHttpTunnel = !isFileDbType && !!mergedValues.useHttpTunnel;
+      const effectiveUseProxy = !isFileDbType && !!mergedValues.useProxy && !effectiveUseHttpTunnel;
       const proxyTypeRaw = String(mergedValues.proxyType || 'socks5').toLowerCase();
       const proxyType: 'socks5' | 'http' = proxyTypeRaw === 'http' ? 'http' : 'socks5';
       const proxyConfig: NonNullable<ConnectionConfig['proxy']> = effectiveUseProxy ? {
@@ -1404,6 +1421,25 @@ const ConnectionModal: React.FC<{
           user: '',
           password: '',
       };
+      const httpTunnelConfig: NonNullable<ConnectionConfig['httpTunnel']> = effectiveUseHttpTunnel ? {
+          host: String(mergedValues.httpTunnelHost || '').trim(),
+          port: Number(mergedValues.httpTunnelPort || 8080),
+          user: String(mergedValues.httpTunnelUser || '').trim(),
+          password: mergedValues.httpTunnelPassword || "",
+      } : {
+          host: '',
+          port: 8080,
+          user: '',
+          password: '',
+      };
+      if (effectiveUseHttpTunnel) {
+          if (!httpTunnelConfig.host) {
+              throw new Error('HTTP 隧道主机不能为空');
+          }
+          if (!Number.isFinite(httpTunnelConfig.port) || httpTunnelConfig.port <= 0 || httpTunnelConfig.port > 65535) {
+              throw new Error('HTTP 隧道端口必须在 1-65535 之间');
+          }
+      }
 
       const keepPassword = !forPersist || savePassword;
 
@@ -1423,6 +1459,8 @@ const ConnectionModal: React.FC<{
           ssh: sshConfig,
           useProxy: effectiveUseProxy,
           proxy: proxyConfig,
+          useHttpTunnel: effectiveUseHttpTunnel,
+          httpTunnel: httpTunnelConfig,
           driver: mergedValues.driver,
           dsn: mergedValues.dsn,
           timeout: Number(mergedValues.timeout || 30),
@@ -1461,6 +1499,7 @@ const ConnectionModal: React.FC<{
           setUseSSL(false);
           setUseSSH(false);
           setUseProxy(false);
+          setUseHttpTunnel(false);
           form.setFieldsValue({
               host: '',
               port: 0,
@@ -1483,6 +1522,11 @@ const ConnectionModal: React.FC<{
               proxyPort: 1080,
               proxyUser: '',
               proxyPassword: '',
+              useHttpTunnel: false,
+              httpTunnelHost: '',
+              httpTunnelPort: 8080,
+              httpTunnelUser: '',
+              httpTunnelPassword: '',
               mysqlTopology: 'single',
               redisTopology: 'single',
               mongoTopology: 'single',
@@ -1505,6 +1549,7 @@ const ConnectionModal: React.FC<{
           const defaultUser = type === 'clickhouse' ? 'default' : 'root';
           const sslCapableType = supportsSSLForType(type);
           setUseSSL(false);
+          setUseHttpTunnel(false);
           form.setFieldsValue({
               user: defaultUser,
               database: '',
@@ -1513,6 +1558,11 @@ const ConnectionModal: React.FC<{
               sslMode: sslCapableType ? 'preferred' : undefined,
               sslCertPath: sslCapableType ? '' : undefined,
               sslKeyPath: sslCapableType ? '' : undefined,
+              useHttpTunnel: false,
+              httpTunnelHost: '',
+              httpTunnelPort: 8080,
+              httpTunnelUser: '',
+              httpTunnelPassword: '',
               mysqlTopology: 'single',
               redisTopology: 'single',
               mongoTopology: 'single',
@@ -1665,6 +1715,8 @@ const ConnectionModal: React.FC<{
             useProxy: false,
             proxyType: 'socks5',
             proxyPort: 1080,
+            useHttpTunnel: false,
+            httpTunnelPort: 8080,
             timeout: 30,
             uri: '',
             mysqlTopology: 'single',
@@ -1693,7 +1745,14 @@ const ConnectionModal: React.FC<{
             }
             if (changed.useSSL !== undefined) setUseSSL(changed.useSSL);
             if (changed.useSSH !== undefined) setUseSSH(changed.useSSH);
-            if (changed.useProxy !== undefined) setUseProxy(changed.useProxy);
+            if (changed.useProxy !== undefined) {
+                const enabledProxy = !!changed.useProxy;
+                setUseProxy(enabledProxy);
+                if (enabledProxy && form.getFieldValue('useHttpTunnel')) {
+                    form.setFieldValue('useHttpTunnel', false);
+                    setUseHttpTunnel(false);
+                }
+            }
             if (changed.proxyType !== undefined) {
                 const nextType = String(changed.proxyType || 'socks5').toLowerCase();
                 if (nextType === 'http') {
@@ -1705,6 +1764,20 @@ const ConnectionModal: React.FC<{
                     const currentPort = Number(form.getFieldValue('proxyPort') || 0);
                     if (!currentPort || currentPort === 8080) {
                         form.setFieldValue('proxyPort', 1080);
+                    }
+                }
+            }
+            if (changed.useHttpTunnel !== undefined) {
+                const enabledHttpTunnel = !!changed.useHttpTunnel;
+                setUseHttpTunnel(enabledHttpTunnel);
+                if (enabledHttpTunnel && form.getFieldValue('useProxy')) {
+                    form.setFieldValue('useProxy', false);
+                    setUseProxy(false);
+                }
+                if (enabledHttpTunnel) {
+                    const currentPort = Number(form.getFieldValue('httpTunnelPort') || 0);
+                    if (!currentPort || currentPort <= 0) {
+                        form.setFieldValue('httpTunnelPort', 8080);
                     }
                 }
             }
@@ -2191,6 +2264,35 @@ const ConnectionModal: React.FC<{
                             <Input.Password placeholder="留空表示无认证" />
                         </Form.Item>
                     </div>
+                </div>
+            )}
+
+            <Divider style={{ margin: '12px 0' }} />
+            <Form.Item name="useHttpTunnel" valuePropName="checked" style={{ marginBottom: 0 }}>
+                <Checkbox>使用 HTTP 隧道（独立代理）</Checkbox>
+            </Form.Item>
+
+            {useHttpTunnel && (
+                <div style={tunnelSectionStyle}>
+                    <div style={{ display: 'flex', gap: 16 }}>
+                        <Form.Item name="httpTunnelHost" label="隧道主机" rules={[{ required: useHttpTunnel, message: '请输入隧道主机' }]} style={{ flex: 1 }}>
+                            <Input placeholder="例如: tunnel.company.com 或 127.0.0.1" />
+                        </Form.Item>
+                        <Form.Item name="httpTunnelPort" label="端口" rules={[{ required: useHttpTunnel, message: '请输入隧道端口' }]} style={{ width: 120 }}>
+                            <InputNumber style={{ width: '100%' }} min={1} max={65535} />
+                        </Form.Item>
+                    </div>
+                    <div style={{ display: 'flex', gap: 16 }}>
+                        <Form.Item name="httpTunnelUser" label="隧道用户名（可选）" style={{ flex: 1 }}>
+                            <Input placeholder="留空表示无认证" />
+                        </Form.Item>
+                        <Form.Item name="httpTunnelPassword" label="隧道密码（可选）" style={{ flex: 1 }}>
+                            <Input.Password placeholder="留空表示无认证" />
+                        </Form.Item>
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                        与“使用代理”互斥，启用后将通过 HTTP CONNECT 建立独立隧道。
+                    </Text>
                 </div>
             )}
 

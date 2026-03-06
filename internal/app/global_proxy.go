@@ -110,7 +110,7 @@ func (a *App) GetGlobalProxyConfig() connection.QueryResult {
 
 func applyGlobalProxyToConnection(config connection.ConnectionConfig) connection.ConnectionConfig {
 	effective := config
-	if effective.UseProxy {
+	if effective.UseProxy || effective.UseHTTPTunnel {
 		return effective
 	}
 	if isFileDatabaseType(effective.Type) {

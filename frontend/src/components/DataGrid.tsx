@@ -142,9 +142,18 @@ const formatCellValue = (val: any) => {
     try {
         if (val === null) return <span style={{ color: '#ccc' }}>NULL</span>;
         if (typeof val === 'object') {
+            if (!Array.isArray(val) && !isPlainObject(val)) {
+                return String(val);
+            }
             const cached = objectCellPreviewCache.get(val);
             if (cached !== undefined) {
                 return cached;
+            }
+            const topLevelSize = Array.isArray(val) ? val.length : Object.keys(val || {}).length;
+            if (topLevelSize > 80) {
+                const summary = Array.isArray(val) ? `[Array(${topLevelSize})]` : `{Object(${topLevelSize})}`;
+                objectCellPreviewCache.set(val, summary);
+                return summary;
             }
             try {
                 const nextText = JSON.stringify(val);
@@ -189,6 +198,26 @@ const isCellValueEqualForDiff = (left: any, right: any): boolean => {
     const rightNullish = right === null || right === undefined;
     if (leftNullish || rightNullish) return leftNullish && rightNullish;
     return toFormText(left) === toFormText(right);
+};
+
+// 渲染阶段轻量比较：避免对象值在 shouldCellUpdate 中反复深度序列化导致卡顿。
+const isCellValueEqualForRender = (left: any, right: any): boolean => {
+    if (left === right) return true;
+    const leftNullish = left === null || left === undefined;
+    const rightNullish = right === null || right === undefined;
+    if (leftNullish || rightNullish) return leftNullish && rightNullish;
+
+    const leftType = typeof left;
+    const rightType = typeof right;
+    if (leftType === 'object' || rightType === 'object') {
+        // 对象仅按引用比较；真正的值差异在提交保存时再做严格比对。
+        return false;
+    }
+
+    if (leftType === 'string' || rightType === 'string') {
+        return normalizeDateTimeString(String(left)) === normalizeDateTimeString(String(right));
+    }
+    return left === right;
 };
 
 const INLINE_EDIT_MAX_CHARS = 2000;
@@ -2067,7 +2096,7 @@ const DataGrid: React.FC<DataGridProps> = ({
           shouldCellUpdate: (record: Item, prevRecord: Item) => {
               const rowKeyChanged = record?.[GONAVI_ROW_KEY] !== prevRecord?.[GONAVI_ROW_KEY];
               if (rowKeyChanged) return true;
-              return !isCellValueEqualForDiff(record?.[key], prevRecord?.[key]);
+              return !isCellValueEqualForRender(record?.[key], prevRecord?.[key]);
           },
           onHeaderCell: (column: any) => ({
               width: column.width,
