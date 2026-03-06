@@ -106,9 +106,28 @@ jobs:
         run: |
           set -euo pipefail
           pr_number="${{ steps.sync_pr.outputs.pr_number }}"
-          mergeable="$(gh pr view "${pr_number}" --json mergeable --jq '.mergeable')"
-          merge_state_status="$(gh pr view "${pr_number}" --json mergeStateStatus --jq '.mergeStateStatus')"
-          echo "PR #${pr_number} 合并状态：mergeable=${mergeable}, mergeStateStatus=${merge_state_status}"
+          mergeable="UNKNOWN"
+          merge_state_status="UNKNOWN"
+
+          for attempt in 1 2 3 4 5 6; do
+            mergeable="$(gh pr view "${pr_number}" --json mergeable --jq '.mergeable')"
+            merge_state_status="$(gh pr view "${pr_number}" --json mergeStateStatus --jq '.mergeStateStatus')"
+            echo "第 ${attempt} 次检查 PR #${pr_number} 合并状态：mergeable=${mergeable}, mergeStateStatus=${merge_state_status}"
+            if [ "${mergeable}" != "UNKNOWN" ]; then
+              break
+            fi
+            if [ "${attempt}" -lt 6 ]; then
+              echo "GitHub 仍在计算可合并状态，3 秒后重试..."
+              sleep 3
+            fi
+          done
+
+          if [ "${mergeable}" = "UNKNOWN" ]; then
+            echo "::warning::PR 合并状态仍在计算中，本次未开启自动合并，可稍后重跑 workflow 或手动开启。"
+            echo "merge_state_pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge_state_pending=false" >> "$GITHUB_OUTPUT"
+          fi
           echo "mergeable=${mergeable}" >> "$GITHUB_OUTPUT"
           echo "merge_state_status=${merge_state_status}" >> "$GITHUB_OUTPUT"
 
@@ -151,6 +170,8 @@ jobs:
             echo "- 合并状态详情：${{ steps.merge_state.outputs.merge_state_status }}"
             if [ "${{ steps.merge_state.outputs.mergeable }}" = "CONFLICTING" ]; then
               echo "- 结论：检测到冲突，需要手动处理后合并"
+            elif [ "${{ steps.merge_state.outputs.merge_state_pending }}" = "true" ]; then
+              echo "- 结论：GitHub 仍在计算合并状态，本次未开启自动合并；可稍后重跑 workflow 或手动开启 auto-merge"
             elif [ "${{ steps.auto_merge.outputs.result }}" = "enabled" ]; then
               echo "- 结论：已启用自动合并（满足保护规则后将自动入 dev）"
             else
