@@ -155,6 +155,16 @@ const reverseOrderBySQL = (orderBySQL: string): string => {
 type ViewerFilterSnapshot = {
   showFilter: boolean;
   conditions: FilterCondition[];
+  currentPage: number;
+  pageSize: number;
+  sortInfo: { columnKey: string, order: string } | null;
+  scrollTop: number;
+  scrollLeft: number;
+};
+
+type ViewerScrollSnapshot = {
+  top: number;
+  left: number;
 };
 
 const viewerFilterSnapshotsByTab = new Map<string, ViewerFilterSnapshot>();
@@ -175,15 +185,23 @@ const normalizeViewerFilterConditions = (conditions: FilterCondition[] | undefin
 const getViewerFilterSnapshot = (tabId: string): ViewerFilterSnapshot => {
   const cached = viewerFilterSnapshotsByTab.get(String(tabId || '').trim());
   if (!cached) {
-    return { showFilter: false, conditions: [] };
+    return { showFilter: false, conditions: [], currentPage: 1, pageSize: 100, sortInfo: null, scrollTop: 0, scrollLeft: 0 };
   }
   return {
     showFilter: cached.showFilter === true,
     conditions: normalizeViewerFilterConditions(cached.conditions),
+    currentPage: Number.isFinite(Number(cached.currentPage)) && Number(cached.currentPage) > 0 ? Number(cached.currentPage) : 1,
+    pageSize: Number.isFinite(Number(cached.pageSize)) && Number(cached.pageSize) > 0 ? Number(cached.pageSize) : 100,
+    sortInfo: cached.sortInfo && cached.sortInfo.columnKey && (cached.sortInfo.order === 'ascend' || cached.sortInfo.order === 'descend')
+      ? { columnKey: String(cached.sortInfo.columnKey), order: cached.sortInfo.order }
+      : null,
+    scrollTop: Number.isFinite(Number(cached.scrollTop)) ? Number(cached.scrollTop) : 0,
+    scrollLeft: Number.isFinite(Number(cached.scrollLeft)) ? Number(cached.scrollLeft) : 0,
   };
 };
 
 const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
+  const initialViewerSnapshot = useMemo(() => getViewerFilterSnapshot(tab.id), [tab.id]);
   const [data, setData] = useState<any[]>([]);
   const [columnNames, setColumnNames] = useState<string[]>([]);
   const [pkColumns, setPkColumns] = useState<string[]>([]);
@@ -204,10 +222,15 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
   const latestDbNameRef = useRef<string>('');
   const latestCountSqlRef = useRef<string>('');
   const latestCountKeyRef = useRef<string>('');
+  const scrollSnapshotRef = useRef<ViewerScrollSnapshot>({
+    top: initialViewerSnapshot.scrollTop,
+    left: initialViewerSnapshot.scrollLeft,
+  });
+  const initialLoadRef = useRef(false);
 
   const [pagination, setPagination] = useState<ViewerPaginationState>({
-      current: 1,
-      pageSize: 100,
+      current: initialViewerSnapshot.currentPage,
+      pageSize: initialViewerSnapshot.pageSize,
       total: 0,
       totalKnown: false,
       totalApprox: false,
@@ -215,10 +238,10 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
       totalCountCancelled: false,
   });
 
-  const [sortInfo, setSortInfo] = useState<{ columnKey: string, order: string } | null>(null);
+  const [sortInfo, setSortInfo] = useState<{ columnKey: string, order: string } | null>(initialViewerSnapshot.sortInfo);
   
-  const [showFilter, setShowFilter] = useState<boolean>(() => getViewerFilterSnapshot(tab.id).showFilter);
-  const [filterConditions, setFilterConditions] = useState<FilterCondition[]>(() => getViewerFilterSnapshot(tab.id).conditions);
+  const [showFilter, setShowFilter] = useState<boolean>(initialViewerSnapshot.showFilter);
+  const [filterConditions, setFilterConditions] = useState<FilterCondition[]>(initialViewerSnapshot.conditions);
   const duckdbSafeSelectCacheRef = useRef<Record<string, string>>({});
   const currentConnConfig = connections.find(c => c.id === tab.connectionId)?.config;
   const currentConnCaps = getDataSourceCapabilities(currentConnConfig);
@@ -229,16 +252,25 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
     const snapshot = getViewerFilterSnapshot(tab.id);
     setShowFilter(snapshot.showFilter);
     setFilterConditions(snapshot.conditions);
+    setSortInfo(snapshot.sortInfo);
+    scrollSnapshotRef.current = { top: snapshot.scrollTop, left: snapshot.scrollLeft };
+    initialLoadRef.current = false;
   }, [tab.id]);
 
   useEffect(() => {
     viewerFilterSnapshotsByTab.set(tab.id, {
       showFilter,
       conditions: normalizeViewerFilterConditions(filterConditions),
+      currentPage: pagination.current,
+      pageSize: pagination.pageSize,
+      sortInfo,
+      scrollTop: scrollSnapshotRef.current.top,
+      scrollLeft: scrollSnapshotRef.current.left,
     });
-  }, [tab.id, showFilter, filterConditions]);
+  }, [tab.id, showFilter, filterConditions, pagination.current, pagination.pageSize, sortInfo]);
 
   useEffect(() => {
+    const snapshot = getViewerFilterSnapshot(tab.id);
     setPkColumns([]);
     pkKeyRef.current = '';
     countKeyRef.current = '';
@@ -250,16 +282,29 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
     latestDbNameRef.current = '';
     latestCountSqlRef.current = '';
     latestCountKeyRef.current = '';
+    scrollSnapshotRef.current = { top: snapshot.scrollTop, left: snapshot.scrollLeft };
+    initialLoadRef.current = false;
     setPagination(prev => ({
       ...prev,
-      current: 1,
+      current: snapshot.currentPage,
+      pageSize: snapshot.pageSize,
       total: 0,
       totalKnown: false,
       totalApprox: false,
       totalCountLoading: false,
       totalCountCancelled: false,
     }));
-  }, [tab.connectionId, tab.dbName, tab.tableName]);
+  }, [tab.id, tab.connectionId, tab.dbName, tab.tableName]);
+
+  const handleTableScrollSnapshotChange = useCallback((snapshot: ViewerScrollSnapshot) => {
+    scrollSnapshotRef.current = snapshot;
+    const cached = getViewerFilterSnapshot(tab.id);
+    viewerFilterSnapshotsByTab.set(tab.id, {
+      ...cached,
+      scrollTop: snapshot.top,
+      scrollLeft: snapshot.left,
+    });
+  }, [tab.id]);
 
   const handleDuckDBManualCount = useCallback(async () => {
     if (latestDbTypeRef.current !== 'duckdb') {
@@ -765,8 +810,13 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
   }, [tab.tableName, currentConnConfig?.type, filterConditions, sortInfo, pkColumns]);
 
   useEffect(() => {
-    fetchData(1, pagination.pageSize); 
-  }, [tab, sortInfo, filterConditions]); // Initial load and re-load on sort/filter
+    if (!initialLoadRef.current) {
+      initialLoadRef.current = true;
+      fetchData(pagination.current, pagination.pageSize);
+      return;
+    }
+    fetchData(1, pagination.pageSize);
+  }, [tab.id, tab.connectionId, tab.dbName, tab.tableName, sortInfo, filterConditions]); // Initial load and re-load on sort/filter
 
   return (
     <div style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, height: '100%', width: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -792,6 +842,8 @@ const DataViewer: React.FC<{ tab: TabData }> = ({ tab }) => {
           readOnly={forceReadOnly}
           sortInfoExternal={sortInfo}
           exportSqlWithFilter={exportSqlWithFilter || undefined}
+          scrollSnapshot={scrollSnapshotRef.current}
+          onScrollSnapshotChange={handleTableScrollSnapshotChange}
       />
     </div>
   );

@@ -283,6 +283,7 @@ function App() {
       let inFlight = false;
       let lastRatio = Number(window.devicePixelRatio) || 1;
       let lastFixAt = 0;
+      let activationTimer: number | null = null;
 
       const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
@@ -334,17 +335,55 @@ function App() {
           void fixWindowScaleIfNeeded();
       };
 
+      const scheduleActivationFix = () => {
+          if (cancelled) return;
+          if (activationTimer !== null) {
+              window.clearTimeout(activationTimer);
+          }
+          activationTimer = window.setTimeout(() => {
+              activationTimer = null;
+              if (cancelled) return;
+              void fixWindowScaleIfNeeded();
+          }, 80);
+      };
+
+      const handleWindowFocus = () => {
+          if (cancelled) return;
+          checkDevicePixelRatio();
+          scheduleActivationFix();
+      };
+
+      const handleVisibilityChange = () => {
+          if (cancelled) return;
+          if (document.visibilityState !== 'visible') {
+              return;
+          }
+          checkDevicePixelRatio();
+          scheduleActivationFix();
+      };
+
+      const handlePageShow = () => {
+          if (cancelled) return;
+          checkDevicePixelRatio();
+          scheduleActivationFix();
+      };
+
       const pollTimer = window.setInterval(checkDevicePixelRatio, 900);
       window.addEventListener('resize', checkDevicePixelRatio);
-      window.addEventListener('focus', checkDevicePixelRatio);
-      document.addEventListener('visibilitychange', checkDevicePixelRatio);
+      window.addEventListener('focus', handleWindowFocus);
+      window.addEventListener('pageshow', handlePageShow);
+      document.addEventListener('visibilitychange', handleVisibilityChange);
 
       return () => {
           cancelled = true;
+          if (activationTimer !== null) {
+              window.clearTimeout(activationTimer);
+          }
           window.clearInterval(pollTimer);
           window.removeEventListener('resize', checkDevicePixelRatio);
-          window.removeEventListener('focus', checkDevicePixelRatio);
-          document.removeEventListener('visibilitychange', checkDevicePixelRatio);
+          window.removeEventListener('focus', handleWindowFocus);
+          window.removeEventListener('pageshow', handlePageShow);
+          document.removeEventListener('visibilitychange', handleVisibilityChange);
       };
   }, []);
 

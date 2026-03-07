@@ -334,7 +334,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: test-build-${{ matrix.os_name }}-${{ matrix.arch_name }}-run${{ github.run_number }}
+          name: test-build-${{ matrix.build_name }}-run${{ github.run_number }}
           path: |
             artifacts/*
             drivers/**

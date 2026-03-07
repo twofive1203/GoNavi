@@ -610,6 +610,8 @@ interface DataGridProps {
     exportSqlWithFilter?: string;
     onApplyFilter?: (conditions: GridFilterCondition[]) => void;
     appliedFilterConditions?: FilterCondition[];
+    scrollSnapshot?: { top: number; left: number };
+    onScrollSnapshotChange?: (snapshot: { top: number; left: number }) => void;
 }
 
 type GridFilterCondition = FilterCondition & {
@@ -629,7 +631,8 @@ type ColumnMeta = {
 
 const DataGrid: React.FC<DataGridProps> = ({
     data, columnNames, loading, tableName, exportScope = 'table', resultSql, dbName, connectionId, pkColumns = [], readOnly = false,
-    onReload, onSort, onPageChange, pagination, onRequestTotalCount, onCancelTotalCount, sortInfoExternal, showFilter, onToggleFilter, exportSqlWithFilter, onApplyFilter, appliedFilterConditions
+    onReload, onSort, onPageChange, pagination, onRequestTotalCount, onCancelTotalCount, sortInfoExternal, showFilter, onToggleFilter, exportSqlWithFilter, onApplyFilter, appliedFilterConditions,
+    scrollSnapshot, onScrollSnapshotChange
 }) => {
   const connections = useStore(state => state.connections);
   const addSqlLog = useStore(state => state.addSqlLog);
@@ -778,6 +781,8 @@ const DataGrid: React.FC<DataGridProps> = ({
   const lastTableScrollLeftRef = useRef(0);
   const lastExternalScrollLeftRef = useRef(0);
   const pendingScrollToBottomRef = useRef(false);
+  const lastReportedScrollRef = useRef<{ top: number; left: number }>({ top: 0, left: 0 });
+  const didRestoreScrollRef = useRef(false);
 
   // 批量编辑模式状态
   const [cellEditMode, setCellEditMode] = useState(false);
@@ -2795,6 +2800,13 @@ const DataGrid: React.FC<DataGridProps> = ({
       return active ? [active] : [];
   }, []);
 
+  const pickVerticalScrollTarget = useCallback((tableContainer: HTMLElement): HTMLElement | null => {
+      const virtualHolder = tableContainer.querySelector('.ant-table-tbody-virtual-holder') as HTMLElement | null;
+      const rcVirtualHolder = tableContainer.querySelector('.rc-virtual-list-holder') as HTMLElement | null;
+      const body = tableContainer.querySelector('.ant-table-body') as HTMLElement | null;
+      return virtualHolder || rcVirtualHolder || body;
+  }, []);
+
   const syncExternalScrollFromTargets = useCallback((targets?: HTMLElement[], source?: HTMLElement | null) => {
       const externalScroll = externalHScrollRef.current;
       if (!(externalScroll instanceof HTMLDivElement) || horizontalSyncSourceRef.current === 'external') {
@@ -2877,11 +2889,161 @@ const DataGrid: React.FC<DataGridProps> = ({
       };
   }, [horizontalScrollVisible]);
 
+  // 非虚拟模式：支持在数据区直接使用触摸板/Shift+滚轮进行横向滚动。
+  // 某些平台在表格内容未铺满一页时，不会把水平手势正确路由到表格 body，导致只能在表头/底部滚动条区域滚动。
+  useEffect(() => {
+      if (viewMode !== 'table' || enableVirtual) return;
+      const container = tableContainerRef.current;
+      if (!(container instanceof HTMLElement)) return;
+
+      const resolveHorizontalDelta = (event: WheelEvent) => {
+          if (Math.abs(event.deltaX) > 0.5) {
+              return event.deltaX;
+          }
+          if (event.shiftKey && Math.abs(event.deltaY) > 0.5) {
+              return event.deltaY;
+          }
+          return 0;
+      };
+
+      const isTableDataAreaTarget = (target: EventTarget | null) => {
+          const element = target instanceof HTMLElement ? target : null;
+          if (!element) return false;
+          if (element.closest('.data-grid-external-hscroll')) return false;
+          return !!element.closest('.ant-table-body, .ant-table-content, .ant-table-cell, .ant-table-row, .ant-table-tbody');
+      };
+
+      const handleContainerHorizontalWheel = (event: WheelEvent) => {
+          const horizontalDelta = resolveHorizontalDelta(event);
+          if (!Number.isFinite(horizontalDelta) || Math.abs(horizontalDelta) < 0.5) return;
+          if (!isTableDataAreaTarget(event.target)) return;
+
+          const targets = pickHorizontalScrollTargets(container);
+          const activeTarget = targets.find((target) => target.scrollWidth > target.clientWidth + 1) || targets[0];
+          if (!(activeTarget instanceof HTMLElement)) return;
+
+          const maxScrollLeft = Math.max(0, activeTarget.scrollWidth - activeTarget.clientWidth);
+          if (maxScrollLeft <= 0) return;
+
+          const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, activeTarget.scrollLeft + horizontalDelta));
+          if (Math.abs(nextScrollLeft - activeTarget.scrollLeft) < 1) return;
+
+          event.preventDefault();
+          event.stopPropagation();
+
+          horizontalSyncSourceRef.current = 'table';
+          activeTarget.scrollLeft = nextScrollLeft;
+          lastTableScrollLeftRef.current = nextScrollLeft;
+
+          const externalScroll = externalHScrollRef.current;
+          if (externalScroll && Math.abs(externalScroll.scrollLeft - nextScrollLeft) > 1) {
+              externalScroll.scrollLeft = nextScrollLeft;
+              lastExternalScrollLeftRef.current = nextScrollLeft;
+          }
+          horizontalSyncSourceRef.current = '';
+      };
+
+      container.addEventListener('wheel', handleContainerHorizontalWheel, { passive: false, capture: true });
+      return () => {
+          container.removeEventListener('wheel', handleContainerHorizontalWheel, { capture: true } as EventListenerOptions);
+      };
+  }, [viewMode, enableVirtual, pickHorizontalScrollTargets]);
+
   useEffect(() => {
       if (viewMode !== 'table') return;
       const rafId = requestAnimationFrame(() => recalculateTableMetrics(containerRef.current));
       return () => cancelAnimationFrame(rafId);
   }, [viewMode, totalWidth, mergedDisplayData.length, recalculateTableMetrics]);
+
+  useEffect(() => {
+      if (viewMode !== 'table' || !onScrollSnapshotChange) return;
+      const tableContainer = tableContainerRef.current;
+      if (!(tableContainer instanceof HTMLElement)) return;
+
+      let rafId: number | null = null;
+      let boundVerticalTarget: HTMLElement | null = null;
+      let boundHorizontalTargets: HTMLElement[] = [];
+      const externalScroll = externalHScrollRef.current;
+      const hasStoredScroll = !!scrollSnapshot && (Math.abs(scrollSnapshot.top) > 0.5 || Math.abs(scrollSnapshot.left) > 0.5);
+
+      const emitSnapshot = () => {
+          if (!didRestoreScrollRef.current && hasStoredScroll) {
+              return;
+          }
+          const verticalTarget = boundVerticalTarget || pickVerticalScrollTarget(tableContainer);
+          const horizontalTargets = boundHorizontalTargets.length > 0 ? boundHorizontalTargets : pickHorizontalScrollTargets(tableContainer);
+          const top = verticalTarget ? verticalTarget.scrollTop : 0;
+          const left = horizontalTargets[0]?.scrollLeft ?? externalScroll?.scrollLeft ?? 0;
+          if (Math.abs(lastReportedScrollRef.current.top - top) < 1 && Math.abs(lastReportedScrollRef.current.left - left) < 1) {
+              return;
+          }
+          lastReportedScrollRef.current = { top, left };
+          onScrollSnapshotChange({ top, left });
+      };
+
+      const bindTargets = () => {
+          if (boundVerticalTarget) {
+              boundVerticalTarget.removeEventListener('scroll', emitSnapshot);
+          }
+          boundHorizontalTargets.forEach(target => target.removeEventListener('scroll', emitSnapshot));
+          externalScroll?.removeEventListener('scroll', emitSnapshot);
+
+          boundVerticalTarget = pickVerticalScrollTarget(tableContainer);
+          boundHorizontalTargets = pickHorizontalScrollTargets(tableContainer);
+
+          boundVerticalTarget?.addEventListener('scroll', emitSnapshot, { passive: true });
+          boundHorizontalTargets.forEach(target => target.addEventListener('scroll', emitSnapshot, { passive: true }));
+          externalScroll?.addEventListener('scroll', emitSnapshot, { passive: true });
+          emitSnapshot();
+      };
+
+      rafId = requestAnimationFrame(bindTargets);
+      return () => {
+          if (rafId !== null) cancelAnimationFrame(rafId);
+          if (boundVerticalTarget) {
+              boundVerticalTarget.removeEventListener('scroll', emitSnapshot);
+          }
+          boundHorizontalTargets.forEach(target => target.removeEventListener('scroll', emitSnapshot));
+          externalScroll?.removeEventListener('scroll', emitSnapshot);
+      };
+  }, [viewMode, mergedDisplayData.length, onScrollSnapshotChange, pickHorizontalScrollTargets, pickVerticalScrollTarget, scrollSnapshot]);
+
+  useEffect(() => {
+      if (viewMode !== 'table') return;
+      if (!scrollSnapshot) return;
+      if (didRestoreScrollRef.current) return;
+      const tableContainer = tableContainerRef.current;
+      if (!(tableContainer instanceof HTMLElement)) return;
+      if (mergedDisplayData.length === 0) return;
+
+      let rafId = requestAnimationFrame(() => {
+          const verticalTarget = pickVerticalScrollTarget(tableContainer);
+          const horizontalTargets = pickHorizontalScrollTargets(tableContainer);
+          const nextTop = Math.max(0, scrollSnapshot.top);
+          const nextLeft = Math.max(0, scrollSnapshot.left);
+          if (verticalTarget && Math.abs(verticalTarget.scrollTop - scrollSnapshot.top) > 1) {
+              verticalTarget.scrollTop = nextTop;
+          }
+          if (Math.abs(nextLeft) > 0.5) {
+              horizontalTargets.forEach(target => {
+                  if (Math.abs(target.scrollLeft - nextLeft) > 1) {
+                      target.scrollLeft = nextLeft;
+                  }
+              });
+              const externalScroll = externalHScrollRef.current;
+              if (externalScroll && Math.abs(externalScroll.scrollLeft - nextLeft) > 1) {
+                  externalScroll.scrollLeft = nextLeft;
+              }
+              lastTableScrollLeftRef.current = nextLeft;
+              lastExternalScrollLeftRef.current = nextLeft;
+          }
+          lastReportedScrollRef.current = { top: nextTop, left: nextLeft };
+          didRestoreScrollRef.current = true;
+          onScrollSnapshotChange?.({ top: nextTop, left: nextLeft });
+      });
+
+      return () => cancelAnimationFrame(rafId);
+  }, [viewMode, mergedDisplayData.length, scrollSnapshot, pickHorizontalScrollTargets, pickVerticalScrollTarget, onScrollSnapshotChange]);
 
   // 虚拟模式下，在容器级别监听 wheel 事件，当鼠标在底部水平滚动条区域时拦截并转为水平滚动
   useEffect(() => {

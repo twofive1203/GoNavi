@@ -31,10 +31,42 @@ func normalizeQueryValue(v interface{}) interface{} {
 }
 
 func normalizeQueryValueWithDBType(v interface{}, databaseTypeName string) interface{} {
+	if tm, ok := v.(time.Time); ok {
+		return normalizeTemporalValueForDisplay(tm, databaseTypeName)
+	}
 	if b, ok := v.([]byte); ok {
 		return bytesToDisplayValue(b, databaseTypeName)
 	}
 	return normalizeCompositeQueryValue(v)
+}
+
+func normalizeTemporalValueForDisplay(value time.Time, databaseTypeName string) interface{} {
+	if value.IsZero() {
+		if zeroValue, ok := zeroTemporalDisplayValue(databaseTypeName); ok {
+			return zeroValue
+		}
+	}
+	return value.Format(time.RFC3339Nano)
+}
+
+func zeroTemporalDisplayValue(databaseTypeName string) (string, bool) {
+	typeName := strings.ToUpper(strings.TrimSpace(databaseTypeName))
+	if typeName == "" {
+		return "0000-00-00 00:00:00", true
+	}
+
+	switch {
+	case strings.Contains(typeName, "TIMESTAMP") || strings.Contains(typeName, "DATETIME"):
+		return "0000-00-00 00:00:00", true
+	case typeName == "DATE" || typeName == "NEWDATE":
+		return "0000-00-00", true
+	case strings.Contains(typeName, "TIME"):
+		return "00:00:00", true
+	case strings.Contains(typeName, "YEAR"):
+		return "0000", true
+	default:
+		return "", false
+	}
 }
 
 func normalizeCompositeQueryValue(v interface{}) interface{} {
@@ -91,7 +123,7 @@ func normalizeCompositeQueryValue(v interface{}) interface{} {
 		// 部分驱动（如 Kingbase）会返回复杂结构体值，直接透传会导致前端渲染和比较开销激增。
 		// 统一降级为可读字符串，避免对象深层序列化触发 UI 卡顿。
 		if tm, ok := v.(time.Time); ok {
-			return tm.Format(time.RFC3339Nano)
+			return normalizeTemporalValueForDisplay(tm, "")
 		}
 		if stringer, ok := v.(fmt.Stringer); ok {
 			return stringer.String()

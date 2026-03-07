@@ -195,3 +195,33 @@ func TestNormalizeQueryValueWithDBType_TimeStructToRFC3339(t *testing.T) {
 		t.Fatalf("time.Time 规整值异常，实际=%s", text)
 	}
 }
+
+func TestNormalizeQueryValueWithDBType_ZeroTemporalValues(t *testing.T) {
+	zero := time.Time{}
+	cases := []struct {
+		name     string
+		dbType   string
+		wantText string
+	}{
+		{name: "date", dbType: "DATE", wantText: "0000-00-00"},
+		{name: "newdate", dbType: "NEWDATE", wantText: "0000-00-00"},
+		{name: "datetime", dbType: "DATETIME", wantText: "0000-00-00 00:00:00"},
+		{name: "timestamp", dbType: "TIMESTAMP", wantText: "0000-00-00 00:00:00"},
+		{name: "time", dbType: "TIME", wantText: "00:00:00"},
+		{name: "year", dbType: "YEAR", wantText: "0000"},
+		{name: "unknown", dbType: "", wantText: "0000-00-00 00:00:00"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeQueryValueWithDBType(zero, tc.dbType)
+			text, ok := got.(string)
+			if !ok {
+				t.Fatalf("期望 string，实际=%v(%T)", got, got)
+			}
+			if text != tc.wantText {
+				t.Fatalf("dbType=%s 期望=%s，实际=%s", tc.dbType, tc.wantText, text)
+			}
+		})
+	}
+}
