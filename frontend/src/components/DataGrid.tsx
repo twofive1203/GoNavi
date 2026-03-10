@@ -2175,6 +2175,11 @@ const DataGrid: React.FC<DataGridProps> = ({
                       'data-row-key': rowKey === undefined || rowKey === null ? undefined : String(rowKey),
                       'data-col-name': dataIndex,
                       onDoubleClick: () => handleVirtualCellActivate(record, dataIndex, dataIndex),
+                      onContextMenu: (e: React.MouseEvent) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          showCellContextMenu(e, record, dataIndex, dataIndex);
+                      },
                   };
               }
               return {
@@ -2204,10 +2209,24 @@ const DataGrid: React.FC<DataGridProps> = ({
                       </EditableCell>
                   );
               }
+              if (enableVirtual) {
+                  return (
+                      <div
+                          style={{ margin: -8, padding: '8px 8px 8px 8px' }}
+                          onContextMenu={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              showCellContextMenu(e, record, dataIndex, dataIndex);
+                          }}
+                      >
+                          {originalRenderContent}
+                      </div>
+                  );
+              }
               return originalRenderContent;
           }
       };
-  }), [columns, enableInlineEditableCell, enableVirtual, handleCellSave, openCellEditor, handleVirtualCellActivate]);
+  }), [columns, enableInlineEditableCell, enableVirtual, handleCellSave, openCellEditor, handleVirtualCellActivate, showCellContextMenu]);
 
   const handleAddRow = () => {
       const newKey = `new-${Date.now()}`;
@@ -2746,9 +2765,9 @@ const DataGrid: React.FC<DataGridProps> = ({
       handleExportSelected,
       copyToClipboard,
       tableName,
-      enableRowContextMenu: !canModifyData || enableLargeResultOptimizedEditing,
+      enableRowContextMenu: false,
       supportsCopyInsert,
-  }), [handleCopyCsv, handleCopyInsert, handleCopyJson, handleExportSelected, copyToClipboard, tableName, canModifyData, enableLargeResultOptimizedEditing, supportsCopyInsert]);
+  }), [handleCopyCsv, handleCopyInsert, handleCopyJson, handleExportSelected, copyToClipboard, tableName, canModifyData, supportsCopyInsert]);
 
   const cellContextMenuValue = useMemo(() => ({
       showMenu: showCellContextMenu,
@@ -2764,7 +2783,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   const rowPropsFactory = useCallback((record: any) => ({ record } as any), []);
 
   const totalWidth = columns.reduce((sum, col) => sum + (Number(col.width) || 200), 0) + selectionColumnWidth;
-  const useContextMenuRow = !canModifyData || enableLargeResultOptimizedEditing;
+  const useContextMenuRow = false;
   const tableScrollX = useMemo(() => {
       const baseWidth = Math.max(totalWidth, 1000);
       if (!isMacLike || tableViewportWidth <= 0) return baseWidth;
@@ -3756,6 +3775,8 @@ const DataGrid: React.FC<DataGridProps> = ({
                 }}
                 onClick={(e) => e.stopPropagation()}
             >
+                {canModifyData && (
+                    <>
                 <div
                     style={{
                         padding: '8px 12px',
@@ -3789,6 +3810,8 @@ const DataGrid: React.FC<DataGridProps> = ({
                     填充到选中行 ({selectedRowKeys.length})
                 </div>
                 <div style={{ height: 1, background: darkMode ? '#303030' : '#f0f0f0', margin: '4px 0' }} />
+                    </>
+                )}
                 {supportsCopyInsert && (
                     <div
                         style={{
