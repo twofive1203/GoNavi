@@ -2746,9 +2746,9 @@ const DataGrid: React.FC<DataGridProps> = ({
       handleExportSelected,
       copyToClipboard,
       tableName,
-      enableRowContextMenu: !canModifyData,
+      enableRowContextMenu: !canModifyData || enableLargeResultOptimizedEditing,
       supportsCopyInsert,
-  }), [handleCopyCsv, handleCopyInsert, handleCopyJson, handleExportSelected, copyToClipboard, tableName, canModifyData, supportsCopyInsert]);
+  }), [handleCopyCsv, handleCopyInsert, handleCopyJson, handleExportSelected, copyToClipboard, tableName, canModifyData, enableLargeResultOptimizedEditing, supportsCopyInsert]);
 
   const cellContextMenuValue = useMemo(() => ({
       showMenu: showCellContextMenu,
@@ -2764,7 +2764,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   const rowPropsFactory = useCallback((record: any) => ({ record } as any), []);
 
   const totalWidth = columns.reduce((sum, col) => sum + (Number(col.width) || 200), 0) + selectionColumnWidth;
-  const useContextMenuRow = !canModifyData;
+  const useContextMenuRow = !canModifyData || enableLargeResultOptimizedEditing;
   const tableScrollX = useMemo(() => {
       const baseWidth = Math.max(totalWidth, 1000);
       if (!isMacLike || tableViewportWidth <= 0) return baseWidth;
