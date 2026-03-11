@@ -42,39 +42,50 @@ if [ $? -eq 0 ]; then
     # 移动 .app 到 dist
     mv "$APP_SRC" "$DIST_DIR/$APP_DEST_NAME"
     
-    # Ad-hoc 代码签名（无 Apple Developer 账号时防止 Gatekeeper 报已损坏）
-    echo "   🔏 正在对 .app 进行 ad-hoc 签名 (arm64)..."
-    codesign --force --deep --sign - "$DIST_DIR/$APP_DEST_NAME"
+	    # Ad-hoc 代码签名（无 Apple Developer 账号时防止 Gatekeeper 报已损坏）
+	    echo "   🔏 正在对 .app 进行 ad-hoc 签名 (arm64)..."
+	    codesign --force --deep --sign - "$DIST_DIR/$APP_DEST_NAME"
 
-    # 创建 DMG
-    if command -v create-dmg &> /dev/null; then
-        echo "   📦 正在打包 DMG (arm64)..."
-        # 移除已存在的 DMG (以防万一)
-        rm -f "$DIST_DIR/$DMG_NAME"
+	    # 创建 DMG
+	    if command -v create-dmg &> /dev/null; then
+	        echo "   📦 正在打包 DMG (arm64)..."
+	        # 移除已存在的 DMG (以防万一)
+	        rm -f "$DIST_DIR/$DMG_NAME"
+	        # create-dmg 的 source 需要是“包含 .app 的目录”，不能直接传 .app 路径。
+	        STAGE_DIR=$(mktemp -d "$DIST_DIR/.dmg-stage-${APP_NAME}-${VERSION}-arm64.XXXXXX")
+	        if [ -z "$STAGE_DIR" ] || [ ! -d "$STAGE_DIR" ]; then
+	            echo -e "${RED}   ❌ 创建 DMG 临时目录失败，跳过 DMG 打包。${NC}"
+	        else
+	            if command -v ditto &> /dev/null; then
+	                ditto "$DIST_DIR/$APP_DEST_NAME" "$STAGE_DIR/$APP_DEST_NAME"
+	            else
+	                cp -R "$DIST_DIR/$APP_DEST_NAME" "$STAGE_DIR/$APP_DEST_NAME"
+	            fi
 
-        # --sandbox-safe 会跳过 Finder 的 AppleScript 排版，避免打包过程中弹出/打开挂载窗口（CI/本地静默打包更友好）。
-        CREATE_DMG_ARGS=(--volname "${APP_NAME} ${VERSION}" --format UDZO --sandbox-safe)
-        if [ -n "$MAC_VOLICON_PATH" ]; then
-            CREATE_DMG_ARGS+=(--volicon "$MAC_VOLICON_PATH")
+	        # --sandbox-safe 会跳过 Finder 的 AppleScript 排版，避免打包过程中弹出/打开挂载窗口（CI/本地静默打包更友好）。
+	        CREATE_DMG_ARGS=(--volname "${APP_NAME} ${VERSION}" --format UDZO --sandbox-safe)
+	        if [ -n "$MAC_VOLICON_PATH" ]; then
+	            CREATE_DMG_ARGS+=(--volicon "$MAC_VOLICON_PATH")
         else
             echo -e "${YELLOW}   ⚠️  未找到 macOS 卷图标 (build/darwin/icon.icns)，跳过 --volicon。${NC}"
         fi
 
-        create-dmg "${CREATE_DMG_ARGS[@]}" \
-            --window-pos 200 120 \
-            --window-size 800 400 \
-            --icon-size 100 \
-            --icon "$APP_DEST_NAME" 200 190 \
-            --hide-extension "$APP_DEST_NAME" \
-            --app-drop-link 600 185 \
-            "$DIST_DIR/$DMG_NAME" \
-            "$DIST_DIR/$APP_DEST_NAME"
+	        create-dmg "${CREATE_DMG_ARGS[@]}" \
+	            --window-pos 200 120 \
+	            --window-size 800 400 \
+	            --icon-size 100 \
+	            --icon "$APP_DEST_NAME" 200 190 \
+	            --hide-extension "$APP_DEST_NAME" \
+	            --app-drop-link 600 185 \
+	            "$DIST_DIR/$DMG_NAME" \
+	            "$STAGE_DIR"
 
-        CREATE_DMG_EXIT_CODE=$?
-        
-        if [ $CREATE_DMG_EXIT_CODE -ne 0 ]; then
-            echo -e "${RED}   ❌ create-dmg 执行失败 (exit=$CREATE_DMG_EXIT_CODE)，保留 .app 以便排查。${NC}"
-        else
+	        CREATE_DMG_EXIT_CODE=$?
+	        rm -rf "$STAGE_DIR"
+	        
+	        if [ $CREATE_DMG_EXIT_CODE -ne 0 ]; then
+	            echo -e "${RED}   ❌ create-dmg 执行失败 (exit=$CREATE_DMG_EXIT_CODE)，保留 .app 以便排查。${NC}"
+	        else
             # create-dmg 可能会在失败时遗留 rw.*.dmg 中间产物；不要直接当作最终产物使用
             if [ ! -f "$DIST_DIR/$DMG_NAME" ]; then
                 RW_FILE=$(find "$DIST_DIR" -maxdepth 1 -name "rw.*.dmg" -print -quit)
@@ -108,14 +119,15 @@ if [ $? -eq 0 ]; then
             fi
         fi
 
-        if [ ! -f "$DIST_DIR/$DMG_NAME" ]; then
-            echo -e "${RED}   ❌ DMG 生成失败，请检查 create-dmg 输出。${NC}"
-        fi
-    else
-        echo -e "${YELLOW}   ⚠️  未找到 create-dmg 工具，跳过 DMG 打包，仅保留 .app。${NC}"
-        echo "      安装命令: brew install create-dmg"
-    fi
-else
+	        if [ ! -f "$DIST_DIR/$DMG_NAME" ]; then
+	            echo -e "${RED}   ❌ DMG 生成失败，请检查 create-dmg 输出。${NC}"
+	        fi
+	        fi
+	    else
+	        echo -e "${YELLOW}   ⚠️  未找到 create-dmg 工具，跳过 DMG 打包，仅保留 .app。${NC}"
+	        echo "      安装命令: brew install create-dmg"
+	    fi
+	else
     echo -e "${RED}   ❌ macOS arm64 构建失败。${NC}"
 fi
 
@@ -129,37 +141,48 @@ if [ $? -eq 0 ]; then
     
     mv "$APP_SRC" "$DIST_DIR/$APP_DEST_NAME"
     
-    # Ad-hoc 代码签名
-    echo "   🔏 正在对 .app 进行 ad-hoc 签名 (amd64)..."
-    codesign --force --deep --sign - "$DIST_DIR/$APP_DEST_NAME"
+	    # Ad-hoc 代码签名
+	    echo "   🔏 正在对 .app 进行 ad-hoc 签名 (amd64)..."
+	    codesign --force --deep --sign - "$DIST_DIR/$APP_DEST_NAME"
 
-    if command -v create-dmg &> /dev/null; then
-        echo "   📦 正在打包 DMG (amd64)..."
-        rm -f "$DIST_DIR/$DMG_NAME"
+	    if command -v create-dmg &> /dev/null; then
+	        echo "   📦 正在打包 DMG (amd64)..."
+	        rm -f "$DIST_DIR/$DMG_NAME"
+	        # create-dmg 的 source 需要是“包含 .app 的目录”，不能直接传 .app 路径。
+	        STAGE_DIR=$(mktemp -d "$DIST_DIR/.dmg-stage-${APP_NAME}-${VERSION}-amd64.XXXXXX")
+	        if [ -z "$STAGE_DIR" ] || [ ! -d "$STAGE_DIR" ]; then
+	            echo -e "${RED}   ❌ 创建 DMG 临时目录失败，跳过 DMG 打包。${NC}"
+	        else
+	            if command -v ditto &> /dev/null; then
+	                ditto "$DIST_DIR/$APP_DEST_NAME" "$STAGE_DIR/$APP_DEST_NAME"
+	            else
+	                cp -R "$DIST_DIR/$APP_DEST_NAME" "$STAGE_DIR/$APP_DEST_NAME"
+	            fi
 
-        # --sandbox-safe 会跳过 Finder 的 AppleScript 排版，避免打包过程中弹出/打开挂载窗口（CI/本地静默打包更友好）。
-        CREATE_DMG_ARGS=(--volname "${APP_NAME} ${VERSION}" --format UDZO --sandbox-safe)
-        if [ -n "$MAC_VOLICON_PATH" ]; then
-            CREATE_DMG_ARGS+=(--volicon "$MAC_VOLICON_PATH")
+	        # --sandbox-safe 会跳过 Finder 的 AppleScript 排版，避免打包过程中弹出/打开挂载窗口（CI/本地静默打包更友好）。
+	        CREATE_DMG_ARGS=(--volname "${APP_NAME} ${VERSION}" --format UDZO --sandbox-safe)
+	        if [ -n "$MAC_VOLICON_PATH" ]; then
+	            CREATE_DMG_ARGS+=(--volicon "$MAC_VOLICON_PATH")
         else
             echo -e "${YELLOW}   ⚠️  未找到 macOS 卷图标 (build/darwin/icon.icns)，跳过 --volicon。${NC}"
         fi
 
-        create-dmg "${CREATE_DMG_ARGS[@]}" \
-            --window-pos 200 120 \
-            --window-size 800 400 \
-            --icon-size 100 \
-            --icon "$APP_DEST_NAME" 200 190 \
-            --hide-extension "$APP_DEST_NAME" \
-            --app-drop-link 600 185 \
-            "$DIST_DIR/$DMG_NAME" \
-            "$DIST_DIR/$APP_DEST_NAME"
+	        create-dmg "${CREATE_DMG_ARGS[@]}" \
+	            --window-pos 200 120 \
+	            --window-size 800 400 \
+	            --icon-size 100 \
+	            --icon "$APP_DEST_NAME" 200 190 \
+	            --hide-extension "$APP_DEST_NAME" \
+	            --app-drop-link 600 185 \
+	            "$DIST_DIR/$DMG_NAME" \
+	            "$STAGE_DIR"
 
-        CREATE_DMG_EXIT_CODE=$?
+	        CREATE_DMG_EXIT_CODE=$?
+	        rm -rf "$STAGE_DIR"
 
-        if [ $CREATE_DMG_EXIT_CODE -ne 0 ]; then
-            echo -e "${RED}   ❌ create-dmg 执行失败 (exit=$CREATE_DMG_EXIT_CODE)，保留 .app 以便排查。${NC}"
-        else
+	        if [ $CREATE_DMG_EXIT_CODE -ne 0 ]; then
+	            echo -e "${RED}   ❌ create-dmg 执行失败 (exit=$CREATE_DMG_EXIT_CODE)，保留 .app 以便排查。${NC}"
+	        else
             if [ ! -f "$DIST_DIR/$DMG_NAME" ]; then
                 RW_FILE=$(find "$DIST_DIR" -maxdepth 1 -name "rw.*.dmg" -print -quit)
                 if [ -n "$RW_FILE" ]; then
@@ -190,14 +213,15 @@ if [ $? -eq 0 ]; then
             fi
         fi
         
-        if [ ! -f "$DIST_DIR/$DMG_NAME" ]; then
-            echo -e "${RED}   ❌ DMG 生成失败。${NC}"
-        fi
-    else
-        echo -e "${YELLOW}   ⚠️  未找到 create-dmg 工具。${NC}"
-    fi
-else
-    echo -e "${RED}   ❌ macOS amd64 构建失败。${NC}"
+	        if [ ! -f "$DIST_DIR/$DMG_NAME" ]; then
+	            echo -e "${RED}   ❌ DMG 生成失败。${NC}"
+	        fi
+	        fi
+	    else
+	        echo -e "${YELLOW}   ⚠️  未找到 create-dmg 工具。${NC}"
+	    fi
+	else
+	    echo -e "${RED}   ❌ macOS amd64 构建失败。${NC}"
 fi
 
 # --- Windows AMD64 构建 ---

@@ -169,26 +169,26 @@ func collectMySQLAddresses(config connection.ConnectionConfig) []string {
 	return result
 }
 
-func (m *MySQLDB) getDSN(config connection.ConnectionConfig) string {
+func (m *MySQLDB) getDSN(config connection.ConnectionConfig) (string, error) {
 	database := config.Database
 	protocol := "tcp"
 	address := normalizeMySQLAddress(config.Host, config.Port)
 
 	if config.UseSSH {
 		netName, err := ssh.RegisterSSHNetwork(config.SSH)
-		if err == nil {
-			protocol = netName
-			address = normalizeMySQLAddress(config.Host, config.Port)
-		} else {
-			logger.Warnf("注册 SSH 网络失败，将尝试直连：地址=%s:%d 用户=%s，原因：%v", config.Host, config.Port, config.User, err)
+		if err != nil {
+			return "", fmt.Errorf("创建 SSH 隧道失败：%w", err)
 		}
+		protocol = netName
 	}
 
 	timeout := getConnectTimeoutSeconds(config)
 	tlsMode := resolveMySQLTLSMode(config)
 
-	return fmt.Sprintf("%s:%s@%s(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&timeout=%ds&tls=%s",
-		config.User, config.Password, protocol, address, database, timeout, url.QueryEscape(tlsMode))
+	return fmt.Sprintf(
+		"%s:%s@%s(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&timeout=%ds&tls=%s",
+		config.User, config.Password, protocol, address, database, timeout, url.QueryEscape(tlsMode),
+	), nil
 }
 
 func resolveMySQLCredential(config connection.ConnectionConfig, addressIndex int) (string, string) {
@@ -226,7 +226,11 @@ func (m *MySQLDB) Connect(config connection.ConnectionConfig) error {
 		candidateConfig.Port = port
 		candidateConfig.User, candidateConfig.Password = resolveMySQLCredential(runConfig, index)
 
-		dsn := m.getDSN(candidateConfig)
+		dsn, err := m.getDSN(candidateConfig)
+		if err != nil {
+			errorDetails = append(errorDetails, fmt.Sprintf("%s 生成连接串失败: %v", address, err))
+			continue
+		}
 		db, err := sql.Open("mysql", dsn)
 		if err != nil {
 			errorDetails = append(errorDetails, fmt.Sprintf("%s 打开失败: %v", address, err))

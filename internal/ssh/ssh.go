@@ -2,10 +2,13 @@ package ssh
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -69,7 +72,7 @@ func connectSSH(config connection.SSHConfig) (*ssh.Client, error) {
 			}
 		}
 	}
-	
+
 	if config.Password != "" {
 		authMethods = append(authMethods, ssh.Password(config.Password))
 	}
@@ -105,7 +108,7 @@ func RegisterSSHNetwork(sshConfig connection.SSHConfig) (string, error) {
 	// Generate unique network name
 	netName := fmt.Sprintf("ssh_%s_%d", sshConfig.Host, time.Now().UnixNano())
 	logger.Infof("注册 SSH 网络：%s（地址=%s:%d 用户=%s）", netName, sshConfig.Host, sshConfig.Port, sshConfig.User)
-	
+
 	mysql.RegisterDialContext(netName, func(ctx context.Context, addr string) (net.Conn, error) {
 		return dialContext(ctx, client, "tcp", addr)
 	})
@@ -115,11 +118,57 @@ func RegisterSSHNetwork(sshConfig connection.SSHConfig) (string, error) {
 
 // sshClientCache stores SSH clients to avoid creating multiple connections
 var (
-	sshClientCache   = make(map[string]*ssh.Client)
+	sshClientCache   = make(map[sshClientCacheKey]*ssh.Client)
 	sshClientCacheMu sync.RWMutex
-	localForwarders  = make(map[string]*LocalForwarder)
+	localForwarders  = make(map[forwarderCacheKey]*LocalForwarder)
 	forwarderMu      sync.RWMutex
 )
+
+type sshClientCacheKey struct {
+	host string
+	port int
+	user string
+	auth string
+}
+
+type forwarderCacheKey struct {
+	ssh        sshClientCacheKey
+	remoteHost string
+	remotePort int
+}
+
+func sshAuthFingerprint(config connection.SSHConfig) string {
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte(config.Password))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(config.KeyPath))
+	if config.KeyPath != "" {
+		if st, err := os.Stat(config.KeyPath); err == nil {
+			_, _ = hasher.Write([]byte{0})
+			_, _ = hasher.Write([]byte(st.ModTime().UTC().Format(time.RFC3339Nano)))
+			_, _ = hasher.Write([]byte{0})
+			_, _ = hasher.Write([]byte(strconv.FormatInt(st.Size(), 10)))
+		} else {
+			_, _ = hasher.Write([]byte{0})
+			_, _ = hasher.Write([]byte("stat_err"))
+		}
+	}
+	sum := hasher.Sum(nil)
+	return hex.EncodeToString(sum[:8])
+}
+
+func newSSHClientCacheKey(config connection.SSHConfig) sshClientCacheKey {
+	return sshClientCacheKey{
+		host: config.Host,
+		port: config.Port,
+		user: config.User,
+		auth: sshAuthFingerprint(config),
+	}
+}
+
+func formatSSHClientKeyForLog(key sshClientCacheKey) string {
+	return fmt.Sprintf("%s:%d 用户=%s", key.host, key.port, key.user)
+}
 
 // LocalForwarder represents a local port forwarder through SSH
 type LocalForwarder struct {
@@ -249,9 +298,13 @@ func (f *LocalForwarder) IsClosed() bool {
 
 // GetOrCreateLocalForwarder returns a cached forwarder or creates a new one
 func GetOrCreateLocalForwarder(sshConfig connection.SSHConfig, remoteHost string, remotePort int) (*LocalForwarder, error) {
-	key := fmt.Sprintf("%s:%d:%s->%s:%d",
-		sshConfig.Host, sshConfig.Port, sshConfig.User,
-		remoteHost, remotePort)
+	key := forwarderCacheKey{
+		ssh:        newSSHClientCacheKey(sshConfig),
+		remoteHost: remoteHost,
+		remotePort: remotePort,
+	}
+	logKey := fmt.Sprintf("%s:%d:%s->%s:%d",
+		sshConfig.Host, sshConfig.Port, sshConfig.User, remoteHost, remotePort)
 
 	forwarderMu.RLock()
 	forwarder, exists := localForwarders[key]
@@ -259,7 +312,7 @@ func GetOrCreateLocalForwarder(sshConfig connection.SSHConfig, remoteHost string
 
 	// Check if exists and is still valid
 	if exists && forwarder != nil && !forwarder.IsClosed() {
-		logger.Infof("复用已有端口转发：%s", key)
+		logger.Infof("复用已有端口转发：%s", logKey)
 		return forwarder, nil
 	}
 
@@ -287,24 +340,18 @@ func CloseAllForwarders() {
 	forwarderMu.Lock()
 	defer forwarderMu.Unlock()
 
-	for key, forwarder := range localForwarders {
+	for _, forwarder := range localForwarders {
 		if forwarder != nil {
 			_ = forwarder.Close()
-			logger.Infof("已关闭端口转发：%s", key)
+			logger.Infof("已关闭端口转发：本地 %s -> 远程 %s", forwarder.LocalAddr, forwarder.RemoteAddr)
 		}
 	}
-	localForwarders = make(map[string]*LocalForwarder)
-}
-
-
-// getSSHClientCacheKey generates a unique cache key for SSH config
-func getSSHClientCacheKey(config connection.SSHConfig) string {
-	return fmt.Sprintf("%s:%d:%s", config.Host, config.Port, config.User)
+	localForwarders = make(map[forwarderCacheKey]*LocalForwarder)
 }
 
 // GetOrCreateSSHClient returns a cached SSH client or creates a new one
 func GetOrCreateSSHClient(config connection.SSHConfig) (*ssh.Client, error) {
-	key := getSSHClientCacheKey(config)
+	key := newSSHClientCacheKey(config)
 
 	sshClientCacheMu.RLock()
 	client, exists := sshClientCache[key]
@@ -315,11 +362,11 @@ func GetOrCreateSSHClient(config connection.SSHConfig) (*ssh.Client, error) {
 		session, err := client.NewSession()
 		if err == nil {
 			session.Close()
-			logger.Infof("复用已有 SSH 连接：%s", key)
+			logger.Infof("复用已有 SSH 连接：%s", formatSSHClientKeyForLog(key))
 			return client, nil
 		}
 		// Connection is dead, remove from cache
-		logger.Warnf("SSH 连接已断开，重新建立：%s (错误: %v)", key, err)
+		logger.Warnf("SSH 连接已断开，重新建立：%s (错误: %v)", formatSSHClientKeyForLog(key), err)
 		sshClientCacheMu.Lock()
 		delete(sshClientCache, key)
 		sshClientCacheMu.Unlock()
@@ -338,7 +385,7 @@ func GetOrCreateSSHClient(config connection.SSHConfig) (*ssh.Client, error) {
 	sshClientCache[key] = client
 	sshClientCacheMu.Unlock()
 
-	logger.Infof("已缓存 SSH 连接：%s", key)
+	logger.Infof("已缓存 SSH 连接：%s", formatSSHClientKeyForLog(key))
 	return client, nil
 }
 
@@ -367,9 +414,8 @@ func CloseAllSSHClients() {
 	for key, client := range sshClientCache {
 		if client != nil {
 			_ = client.Close()
-			logger.Infof("已关闭 SSH 连接：%s", key)
+			logger.Infof("已关闭 SSH 连接：%s", formatSSHClientKeyForLog(key))
 		}
 	}
-	sshClientCache = make(map[string]*ssh.Client)
+	sshClientCache = make(map[sshClientCacheKey]*ssh.Client)
 }
-
