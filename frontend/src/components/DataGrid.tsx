@@ -1,7 +1,8 @@
+// cspell:ignore anticon sqls uuidv uuidv4 hscroll
 import React, { useState, useEffect, useRef, useContext, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Table, message, Input, Button, Dropdown, MenuProps, Form, Pagination, Select, Modal, Checkbox, Segmented, Tooltip, Popover } from 'antd';
-import type { SortOrder } from 'antd/es/table/interface';
+import type { SortOrder, ColumnType } from 'antd/es/table/interface';
 import { ReloadOutlined, ImportOutlined, ExportOutlined, DownOutlined, PlusOutlined, DeleteOutlined, SaveOutlined, UndoOutlined, FilterOutlined, CloseOutlined, ConsoleSqlOutlined, FileTextOutlined, CopyOutlined, ClearOutlined, EditOutlined, VerticalAlignBottomOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
 import { 
@@ -25,7 +26,7 @@ import { ImportData, ExportTable, ExportData, ExportQuery, ApplyChanges, DBGetCo
 import ImportPreviewModal from './ImportPreviewModal';
 import { useStore } from '../store';
 import type { ColumnDefinition } from '../types';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as generateUuid } from 'uuid';
 import 'react-resizable/css/styles.css';
 import { buildOrderBySQL, buildPaginatedSelectSQL, buildWhereSQL, escapeLiteral, quoteIdentPart, quoteQualifiedIdent, withSortBufferTuningSQL, type FilterCondition } from '../utils/sql';
 import { isMacLikePlatform, normalizeOpacityForPlatform, resolveAppearanceValues } from '../utils/appearance';
@@ -244,13 +245,9 @@ const shouldOpenModalEditor = (val: any): boolean => {
     if (typeof val === 'string') {
         if (val.length > INLINE_EDIT_MAX_CHARS || val.includes('\n')) return true;
         const trimmed = val.trimStart();
-        if (trimmed.startsWith('{') || trimmed.startsWith('[')) return true;
-        return false;
+        return trimmed.startsWith('{') || trimmed.startsWith('[');
     }
-    if (typeof val === 'object') {
-        return true;
-    }
-    return false;
+    return typeof val === 'object';
 };
 
 const getCellFieldName = (record: Item, dataIndex: string) => {
@@ -488,7 +485,7 @@ const DataContext = React.createContext<{
     handleCopyInsert: (r: any) => void;
     handleCopyJson: (r: any) => void;
     handleCopyCsv: (r: any) => void;
-    handleExportSelected: (format: string, r: any) => void;
+    handleExportSelected: (format: string, r: any) => Promise<void>;
     copyToClipboard: (t: string) => void;
     tableName?: string;
     enableRowContextMenu: boolean;
@@ -675,11 +672,11 @@ const ContextMenuRow = React.memo(({ children, record, ...props }: any) => {
             label: '导出选中数据',
             icon: <ExportOutlined />,
             children: [
-                { key: 'exp-csv', label: 'CSV', onClick: () => handleExportSelected('csv', record) },
-                { key: 'exp-xlsx', label: 'Excel', onClick: () => handleExportSelected('xlsx', record) },
-                { key: 'exp-json', label: 'JSON', onClick: () => handleExportSelected('json', record) },
-                { key: 'exp-md', label: 'Markdown', onClick: () => handleExportSelected('md', record) },
-                { key: 'exp-html', label: 'HTML', onClick: () => handleExportSelected('html', record) },
+                { key: 'exp-csv', label: 'CSV', onClick: () => handleExportSelected('csv', record).catch(console.error) },
+                { key: 'exp-xlsx', label: 'Excel', onClick: () => handleExportSelected('xlsx', record).catch(console.error) },
+                { key: 'exp-json', label: 'JSON', onClick: () => handleExportSelected('json', record).catch(console.error) },
+                { key: 'exp-md', label: 'Markdown', onClick: () => handleExportSelected('md', record).catch(console.error) },
+                { key: 'exp-html', label: 'HTML', onClick: () => handleExportSelected('html', record).catch(console.error) },
             ]
         }
     ];
@@ -770,8 +767,8 @@ const DataGrid: React.FC<DataGridProps> = ({
   const resolvedAppearance = resolveAppearanceValues(appearance);
   const opacity = normalizeOpacityForPlatform(resolvedAppearance.opacity);
   const canModifyData = !readOnly && !!tableName;
-  const showColumnComment = queryOptions?.showColumnComment !== false;
-  const showColumnType = queryOptions?.showColumnType !== false;
+  const showColumnComment = queryOptions?.showColumnComment ?? true;
+  const showColumnType = queryOptions?.showColumnType ?? true;
 
   // --- Display Columns Order & Visibility Management ---
   const [allOrderedColumnNames, setAllOrderedColumnNames] = useState<string[]>([]);
@@ -921,14 +918,10 @@ const DataGrid: React.FC<DataGridProps> = ({
   const panelPaddingX = 12;
   const toolbarBottomPadding = 6;
   const filterTopPadding = 2;
-  const panelBorderColor = darkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)';
   const panelFrameColor = darkMode ? 'rgba(0, 0, 0, 0.42)' : 'rgba(0, 0, 0, 0.18)';
   const floatingScrollbarGap = 6;
   const floatingScrollbarInset = 10;
   const floatingScrollbarHeight = 10;
-  const floatingScrollbarTrackBg = 'transparent';
-  const floatingScrollbarBorderColor = 'transparent';
-  const floatingScrollbarShadow = 'none';
   const floatingScrollbarThumbBg = darkMode ? 'rgba(255,255,255,0.34)' : 'rgba(0,0,0,0.22)';
   const floatingScrollbarThumbBorderColor = darkMode ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.32)';
   const floatingScrollbarThumbShadow = darkMode ? '0 4px 12px rgba(0,0,0,0.28)' : '0 4px 10px rgba(0,0,0,0.12)';
@@ -972,7 +965,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   
   const [form] = Form.useForm();
   const [modal, contextHolder] = Modal.useModal();
-  const gridId = useMemo(() => `grid-${uuidv4()}`, []);
+  const gridId = useMemo(() => `grid-${generateUuid()}`, []);
   const [viewMode, setViewMode] = useState<GridViewMode>('table');
   const [textRecordIndex, setTextRecordIndex] = useState(0);
   const [cellEditorOpen, setCellEditorOpen] = useState(false);
@@ -1008,7 +1001,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
   const tableScrollTargetsRef = useRef<HTMLElement[]>([]);
-  const externalHScrollRef = useRef<HTMLDivElement | null>(null);
+  const externalHorizontalScrollRef = useRef<HTMLDivElement | null>(null);
   const horizontalSyncSourceRef = useRef<'table' | 'external' | ''>('');
   const lastTableScrollLeftRef = useRef(0);
   const lastExternalScrollLeftRef = useRef(0);
@@ -1069,7 +1062,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   const showCellContextMenu = useCallback((e: React.MouseEvent, record: Item, dataIndex: string, title: React.ReactNode) => {
     e.preventDefault();
     e.stopPropagation();
-    const titleText = typeof title === 'string' ? title : (typeof title === 'number' ? String(title) : String(dataIndex));
+    const titleText = typeof (title as any) === 'string' ? (title as string) : (typeof (title as any) === 'number' ? String(title) : String(dataIndex));
     setCellContextMenu({
       visible: true,
       x: e.clientX,
@@ -1088,12 +1081,12 @@ const DataGrid: React.FC<DataGridProps> = ({
           // Pass tableName (or 'export') as default filename
           const res = await ExportData(cleanRows, displayColumnNames, tableName || 'export', format);
           if (res.success) {
-              message.success("导出成功");
+              void message.success("导出成功");
           } else if (res.message !== "Cancelled") {
-              message.error("导出失败: " + res.message);
+              void message.error("导出失败: " + res.message);
           }
       } catch (e: any) {
-          message.error("导出失败: " + (e?.message || String(e)));
+          void message.error("导出失败: " + (e?.message || String(e)));
       } finally {
           hide();
       }
@@ -1286,7 +1279,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       const raw = record?.[dataIndex];
       const text = toEditableText(raw);
       const isJson = looksLikeJsonText(text);
-      const titleText = typeof title === 'string' ? title : (typeof title === 'number' ? String(title) : String(dataIndex));
+      const titleText = typeof (title as any) === 'string' ? (title as string) : (typeof (title as any) === 'number' ? String(title) : String(dataIndex));
 
       setCellEditorMeta({ record, dataIndex, title: titleText });
       setCellEditorValue(text);
@@ -1457,7 +1450,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   const handleBatchFillCells = useCallback(() => {
     const cellsToFill = currentSelectionRef.current;
     if (cellsToFill.size === 0) {
-      message.info('请先选择要填充的单元格');
+      void message.info('请先选择要填充的单元格');
       return;
     }
 
@@ -1487,7 +1480,7 @@ const DataGrid: React.FC<DataGridProps> = ({
 
       const existing = modifiedRows[rowKey];
       const baseRow = baseRowMap.get(rowKey);
-      let currentVal: any = undefined;
+      let currentVal: any;
 
       const addedRow = addedRowMap.get(rowKey);
       if (addedRow) {
@@ -1510,7 +1503,7 @@ const DataGrid: React.FC<DataGridProps> = ({
     });
 
     if (updatedCount === 0) {
-      message.info('选中的单元格无需更新');
+      void message.info('选中的单元格无需更新');
       return;
     }
 
@@ -1538,7 +1531,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       return next || prev;
     });
 
-    message.success(`已填充 ${updatedCount} 个单元格`);
+    void message.success(`已填充 ${updatedCount} 个单元格`);
     setBatchEditModalOpen(false);
 
     // 清除选中状态
@@ -1788,7 +1781,7 @@ const DataGrid: React.FC<DataGridProps> = ({
     const selKeys = selectedRowKeysRef.current;
 
     if (selKeys.length === 0) {
-      message.info('请先选择要填充的行');
+      void message.info('请先选择要填充的行');
       return;
     }
 
@@ -1797,7 +1790,7 @@ const DataGrid: React.FC<DataGridProps> = ({
     const targetKeys = selKeys.filter(k => k !== sourceKey);
 
     if (targetKeys.length === 0) {
-      message.info('没有其他选中的行可以填充');
+      void message.info('没有其他选中的行可以填充');
       return;
     }
 
@@ -1836,7 +1829,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       return next || prev;
     });
 
-    message.success(`已填充 ${updatedCount} 行`);
+    void message.success(`已填充 ${updatedCount} 行`);
     setCellContextMenu(prev => ({ ...prev, visible: false }));
   }, [addedRows, rowKeyStr]);
 
@@ -1871,7 +1864,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       return '';
   }, [addedRowKeySet, modifiedRowKeySet, deletedRowKeys, rowKeyStr]);
 
-  const handleTableChange = useCallback((pag: any, filtersArg: any, sorter: any) => {
+  const handleTableChange = useCallback((_pag: any, _filtersArg: any, sorter: any) => {
       if (isResizingRef.current) return; // Block sort if resizing
       if (sorter.field) {
           const field = String(sorter.field);
@@ -2041,7 +2034,7 @@ const DataGrid: React.FC<DataGridProps> = ({
           const obj = JSON.parse(cellEditorValue);
           setCellEditorValue(JSON.stringify(obj, null, 2));
       } catch (e: any) {
-          message.error("JSON 格式无效：" + (e?.message || String(e)));
+          void message.error("JSON 格式无效：" + (e?.message || String(e)));
       }
   }, [cellEditorIsJson, cellEditorValue]);
 
@@ -2119,12 +2112,12 @@ const DataGrid: React.FC<DataGridProps> = ({
   const openRowEditorByKey = useCallback((keyStr?: string) => {
       if (!canModifyData) return;
       if (!keyStr) {
-          message.info('请先定位到要编辑的记录');
+          void message.info('请先定位到要编辑的记录');
           return;
       }
       const displayRow = mergedDisplayData.find(r => rowKeyStr(r?.[GONAVI_ROW_KEY]) === keyStr);
       if (!displayRow) {
-          message.error('未找到目标行，请刷新后重试');
+          void message.error('未找到目标行，请刷新后重试');
           return;
       }
 
@@ -2159,12 +2152,12 @@ const DataGrid: React.FC<DataGridProps> = ({
   const openRowEditor = useCallback(() => {
       if (!canModifyData) return;
       if (selectedRowKeys.length > 1) {
-          message.info('一次只能编辑一行，请仅选择一行');
+          void message.info('一次只能编辑一行，请仅选择一行');
           return;
       }
       const keyStr = selectedRowKeys.length === 1 ? rowKeyStr(selectedRowKeys[0]) : undefined;
       if (!keyStr) {
-          message.info('请先选择一行（勾选复选框）');
+          void message.info('请先选择一行（勾选复选框）');
           return;
       }
       openRowEditorByKey(keyStr);
@@ -2175,7 +2168,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       const currentRow = mergedDisplayData[textRecordIndex];
       const rowKey = currentRow?.[GONAVI_ROW_KEY];
       if (rowKey === undefined || rowKey === null) {
-          message.info('当前记录不可编辑');
+          void message.info('当前记录不可编辑');
           return;
       }
       openRowEditorByKey(rowKeyStr(rowKey));
@@ -2192,7 +2185,7 @@ const DataGrid: React.FC<DataGridProps> = ({
           const parsed = JSON.parse(jsonEditorValue);
           setJsonEditorValue(JSON.stringify(parsed, null, 2));
       } catch (e: any) {
-          message.error("JSON 格式无效：" + (e?.message || String(e)));
+          void message.error("JSON 格式无效：" + (e?.message || String(e)));
       }
   }, [jsonEditorValue]);
 
@@ -2202,16 +2195,16 @@ const DataGrid: React.FC<DataGridProps> = ({
       try {
           parsed = JSON.parse(jsonEditorValue);
       } catch (e: any) {
-          message.error("JSON 解析失败：" + (e?.message || String(e)));
+          void message.error("JSON 解析失败：" + (e?.message || String(e)));
           return;
       }
 
       if (!Array.isArray(parsed)) {
-          message.error("JSON 视图必须是数组格式（每项对应一条记录）");
+          void message.error("JSON 视图必须是数组格式（每项对应一条记录）");
           return;
       }
       if (parsed.length !== mergedDisplayData.length) {
-          message.error(`记录条数不一致：当前 ${mergedDisplayData.length} 条，JSON 中 ${parsed.length} 条。请勿在此模式增删记录。`);
+          void message.error(`记录条数不一致：当前 ${mergedDisplayData.length} 条，JSON 中 ${parsed.length} 条。请勿在此模式增删记录。`);
           return;
       }
 
@@ -2235,14 +2228,14 @@ const DataGrid: React.FC<DataGridProps> = ({
       for (let idx = 0; idx < parsed.length; idx += 1) {
           const nextItem = parsed[idx];
           if (!isPlainObject(nextItem)) {
-              message.error(`第 ${idx + 1} 条记录不是对象，无法应用`);
+              void message.error(`第 ${idx + 1} 条记录不是对象，无法应用`);
               return;
           }
 
           const currentRow = mergedDisplayData[idx];
           const rowKey = currentRow?.[GONAVI_ROW_KEY];
           if (rowKey === undefined || rowKey === null) {
-              message.error(`第 ${idx + 1} 条记录缺少行标识，无法应用`);
+              void message.error(`第 ${idx + 1} 条记录缺少行标识，无法应用`);
               return;
           }
           const keyStr = rowKeyStr(rowKey);
@@ -2293,7 +2286,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       });
 
       setJsonEditorOpen(false);
-      message.success("JSON 修改已应用到当前结果集，可继续“提交事务”");
+      void message.success("JSON 修改已应用到当前结果集，可继续“提交事务”");
   }, [canModifyData, jsonEditorValue, mergedDisplayData, addedRows, rowKeyStr, data, displayColumnNames]);
 
   const openRowEditorFieldEditor = useCallback((dataIndex: string) => {
@@ -2341,7 +2334,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   const enableVirtual = viewMode === 'table';
   const enableInlineEditableCell = canModifyData;
 
-  const columns = useMemo(() => {
+  const columns: (ColumnType<any> & { editable?: boolean })[] = useMemo(() => {
       return displayColumnNames.map(key => ({
           title: renderColumnTitle(key),
           dataIndex: key,
@@ -2390,8 +2383,8 @@ const DataGrid: React.FC<DataGridProps> = ({
       }));
   }, [displayColumnNames, columnWidths, sortInfo, handleResizeStart, canModifyData, onSort, renderColumnTitle]);
 
-  const mergedColumns = useMemo(() => columns.map(col => {
-      if (!col.editable) return col;
+  const mergedColumns = useMemo(() => columns.map((col): ColumnType<any> => {
+      if (!col.editable) return col as ColumnType<any>;
       const dataIndex = String(col.dataIndex);
       return {
           ...col,
@@ -2425,7 +2418,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                   return (
                       <EditableCell
                           title={dataIndex}
-                          editable={col.editable}
+                          editable={!!col.editable}
                           dataIndex={dataIndex}
                           record={record}
                           handleSave={handleCellSave}
@@ -2537,7 +2530,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       });
 
       if (inserts.length === 0 && updates.length === 0 && deletes.length === 0) {
-          message.info("No changes to commit");
+          void message.info("No changes to commit");
           return;
       }
 
@@ -2570,7 +2563,7 @@ const DataGrid: React.FC<DataGridProps> = ({
               message: res.message,
               dbName
           });
-          message.success("事务提交成功");
+          void message.success("事务提交成功");
           setAddedRows([]);
           setModifiedRows({});
           setDeletedRowKeys(new Set());
@@ -2585,13 +2578,13 @@ const DataGrid: React.FC<DataGridProps> = ({
               message: res.message,
               dbName
           });
-          message.error("提交失败: " + res.message);
+          void message.error("提交失败: " + res.message);
       }
   };
 
   const copyToClipboard = useCallback((text: string) => {
-      navigator.clipboard.writeText(text);
-      message.success("Copied to clipboard");
+      navigator.clipboard.writeText(text).catch(console.error);
+      void message.success("Copied to clipboard");
   }, []);
   
   const getTargets = useCallback((clickedRecord: any) => {
@@ -2606,19 +2599,18 @@ const DataGrid: React.FC<DataGridProps> = ({
 
   const handleCopyInsert = useCallback((record: any) => {
       if (!supportsCopyInsert) {
-          message.warning("当前数据源不支持复制为 INSERT，请使用 JSON/CSV/Markdown 复制。");
+          void message.warning("当前数据源不支持复制为 INSERT，请使用 JSON/CSV/Markdown 复制。");
           return;
       }
       const records = getTargets(record);
-      const sqls = records.map((r: any) => {
+      const sqlList = records.map((r: any) => {
           const { [GONAVI_ROW_KEY]: _rowKey, ...vals } = r;
           const cols = Object.keys(vals);
-          const values = Object.values(vals).map(v => v === null ? 'NULL' : `'${v}'`); 
+          const values = Object.values(vals).map(v => v === null ? 'NULL' : `'${v}'`);
           const targetTable = tableName || 'table';
           return `INSERT INTO \`${targetTable}\` (${cols.map(c => `\`${c}\``).join(', ')}) VALUES (${values.join(', ')});`;
       });
-      copyToClipboard(sqls.join('\n'));
-  }, [supportsCopyInsert, tableName, getTargets, copyToClipboard]);
+      copyToClipboard(sqlList.join('\n'));  }, [supportsCopyInsert, tableName, getTargets, copyToClipboard]);
 
   const handleCopyJson = useCallback((record: any) => {
       const records = getTargets(record);
@@ -2660,12 +2652,12 @@ const DataGrid: React.FC<DataGridProps> = ({
       try {
           const res = await ExportQuery(config as any, dbName || '', sql, defaultName || 'export', format);
           if (res.success) {
-              message.success("导出成功");
+              void message.success("导出成功");
           } else if (res.message !== "Cancelled") {
-              message.error("导出失败: " + res.message);
+              void message.error("导出失败: " + res.message);
           }
       } catch (e: any) {
-          message.error("导出失败: " + (e?.message || String(e)));
+          void message.error("导出失败: " + (e?.message || String(e)));
       } finally {
           hide();
       }
@@ -2722,7 +2714,7 @@ const DataGrid: React.FC<DataGridProps> = ({
 
       // 有未提交修改时，优先按界面数据导出，避免与数据库不一致。
       if (hasChanges) {
-          message.warning("当前存在未提交修改，导出将按界面数据生成；如需完整长字段建议先提交后再导出。");
+          void message.warning("当前存在未提交修改，导出将按界面数据生成；如需完整长字段建议先提交后再导出。");
           await exportData(records, format);
           return;
       }
@@ -2778,12 +2770,12 @@ const DataGrid: React.FC<DataGridProps> = ({
           try {
               const res = await ExportTable(config as any, dbName || '', tableName, format);
               if (res.success) {
-                  message.success("导出成功");
+                  void message.success("导出成功");
               } else if (res.message !== "Cancelled") {
-                  message.error("导出失败: " + res.message);
+                  void message.error("导出失败: " + res.message);
               }
           } catch (e: any) {
-              message.error("导出失败: " + (e?.message || String(e)));
+              void message.error("导出失败: " + (e?.message || String(e)));
           } finally {
               hide();
           }
@@ -2791,7 +2783,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       const handlePage = async () => {
           instance.destroy();
           if (hasChanges) {
-              message.warning("当前存在未提交修改，导出将按界面数据生成；如需完整长字段建议先提交后再导出。");
+              void message.warning("当前存在未提交修改，导出将按界面数据生成；如需完整长字段建议先提交后再导出。");
               await exportData(displayData, format);
               return;
           }
@@ -2832,15 +2824,15 @@ const DataGrid: React.FC<DataGridProps> = ({
   const handleExportFilteredAll = async (format: string) => {
       if (!connectionId || !tableName) return;
       if (!filteredExportSql) {
-          message.warning('当前未应用筛选条件');
+          void message.warning('当前未应用筛选条件');
           return;
       }
       if (!supportsSqlQueryExport) {
-          message.error('当前数据源不支持按筛选结果导出');
+          void message.error('当前数据源不支持按筛选结果导出');
           return;
       }
       if (hasChanges) {
-          message.warning("当前存在未提交修改，筛选结果导出基于数据库已提交数据。");
+          void message.warning("当前存在未提交修改，筛选结果导出基于数据库已提交数据。");
       }
 
       await exportByQuery(filteredExportSql, format, `${tableName || 'export'}_filtered`);
@@ -2856,14 +2848,14 @@ const DataGrid: React.FC<DataGridProps> = ({
           setImportFilePath(res.data.filePath);
           setImportPreviewVisible(true);
       } else if (res.message !== "Cancelled") {
-          message.error("选择文件失败: " + res.message);
+          void message.error("选择文件失败: " + res.message);
       }
   };
 
   const handleImportSuccess = () => {
       setImportPreviewVisible(false);
       setImportFilePath('');
-      message.success('导入完成');
+      void message.success('导入完成');
       if (onReload) onReload();
   };
 
@@ -3032,7 +3024,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                   onClick={() => {
                       if (connectionId && dbName && tableName) {
                           clearTableColumnOrder(connectionId, dbName, tableName);
-                          message.success('已恢复默认列排序');
+                          void message.success('已恢复默认列排序');
                       }
                   }}
               >
@@ -3047,7 +3039,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                       if (connectionId && dbName && tableName) {
                           clearTableHiddenColumns(connectionId, dbName, tableName);
                           setLocalHiddenColumns([]);
-                          message.success('已恢复全列显示');
+                          void message.success('已恢复全列显示');
                       }
                   }}
               >
@@ -3128,7 +3120,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   }, []);
 
   const syncExternalScrollFromTargets = useCallback((targets?: HTMLElement[], source?: HTMLElement | null) => {
-      const externalScroll = externalHScrollRef.current;
+      const externalScroll = externalHorizontalScrollRef.current;
       if (!(externalScroll instanceof HTMLDivElement) || horizontalSyncSourceRef.current === 'external') {
           return;
       }
@@ -3152,7 +3144,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   }, []);
 
   const applyExternalScrollToTableTargets = useCallback(() => {
-      const externalScroll = externalHScrollRef.current;
+      const externalScroll = externalHorizontalScrollRef.current;
       if (!(externalScroll instanceof HTMLDivElement)) {
           return;
       }
@@ -3185,7 +3177,7 @@ const DataGrid: React.FC<DataGridProps> = ({
 
   // 非虚拟模式：外部水平滚动条的 wheel 处理（通过原生事件绑定，确保 preventDefault 生效）
   useEffect(() => {
-      const externalScroll = externalHScrollRef.current;
+      const externalScroll = externalHorizontalScrollRef.current;
       if (!externalScroll || !horizontalScrollVisible) return;
 
       const handleExternalWheel = (e: WheelEvent) => {
@@ -3199,8 +3191,7 @@ const DataGrid: React.FC<DataGridProps> = ({
           const maxScrollLeft = Math.max(0, externalScroll.scrollWidth - externalScroll.clientWidth);
           if (maxScrollLeft <= 0) return;
 
-          const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, externalScroll.scrollLeft + dominantDelta));
-          externalScroll.scrollLeft = nextScrollLeft;
+          externalScroll.scrollLeft = Math.max(0, Math.min(maxScrollLeft, externalScroll.scrollLeft + dominantDelta));
       };
 
       externalScroll.addEventListener('wheel', handleExternalWheel, { passive: false, capture: true });
@@ -3229,7 +3220,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       const isTableDataAreaTarget = (target: EventTarget | null) => {
           const element = target instanceof HTMLElement ? target : null;
           if (!element) return false;
-          if (element.closest('.data-grid-external-hscroll')) return false;
+          if (element.closest('.data-grid-external-horizontal-scroll')) return false;
           return !!element.closest('.ant-table-body, .ant-table-content, .ant-table-cell, .ant-table-row, .ant-table-tbody');
       };
 
@@ -3255,7 +3246,7 @@ const DataGrid: React.FC<DataGridProps> = ({
           activeTarget.scrollLeft = nextScrollLeft;
           lastTableScrollLeftRef.current = nextScrollLeft;
 
-          const externalScroll = externalHScrollRef.current;
+          const externalScroll = externalHorizontalScrollRef.current;
           if (externalScroll && Math.abs(externalScroll.scrollLeft - nextScrollLeft) > 1) {
               externalScroll.scrollLeft = nextScrollLeft;
               lastExternalScrollLeftRef.current = nextScrollLeft;
@@ -3283,7 +3274,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       let rafId: number | null = null;
       let boundVerticalTarget: HTMLElement | null = null;
       let boundHorizontalTargets: HTMLElement[] = [];
-      const externalScroll = externalHScrollRef.current;
+      const externalScroll = externalHorizontalScrollRef.current;
       const hasStoredScroll = !!scrollSnapshot && (Math.abs(scrollSnapshot.top) > 0.5 || Math.abs(scrollSnapshot.left) > 0.5);
 
       const emitSnapshot = () => {
@@ -3350,7 +3341,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                       target.scrollLeft = nextLeft;
                   }
               });
-              const externalScroll = externalHScrollRef.current;
+              const externalScroll = externalHorizontalScrollRef.current;
               if (externalScroll && Math.abs(externalScroll.scrollLeft - nextLeft) > 1) {
                   externalScroll.scrollLeft = nextLeft;
               }
@@ -3433,7 +3424,7 @@ const DataGrid: React.FC<DataGridProps> = ({
   useEffect(() => {
       if (viewMode !== 'table') return;
       const tableContainer = tableContainerRef.current;
-      const externalScroll = externalHScrollRef.current;
+      const externalScroll = externalHorizontalScrollRef.current;
       if (!(tableContainer instanceof HTMLElement) || !(externalScroll instanceof HTMLDivElement)) return;
 
       let rafId: number | null = null;
@@ -3577,7 +3568,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                                 }
                                 updateCellSelection(new Set());
                                 if (!next) setBatchEditModalOpen(false);
-                                message.info(next ? '已进入单元格编辑模式，可拖拽选择多个单元格' : '已退出单元格编辑模式');
+                                void message.info(next ? '已进入单元格编辑模式，可拖拽选择多个单元格' : '已退出单元格编辑模式').then();
                             }}
                         >
                             单元格编辑器
@@ -3980,8 +3971,8 @@ const DataGrid: React.FC<DataGridProps> = ({
                     </DataContext.Provider>
                 </Form>
                 <div
-                    ref={externalHScrollRef}
-                    className="data-grid-external-hscroll"
+                    ref={externalHorizontalScrollRef}
+                    className="data-grid-external-horizontal-scroll"
                     aria-hidden={!horizontalScrollVisible}
                     onScroll={applyExternalScrollToTableTargets}
                     style={{
@@ -3990,7 +3981,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                     }}
                 >
                     <div
-                        className="data-grid-external-hscroll-inner"
+                        className="data-grid-external-horizontal-scroll-inner"
                         style={{ width: `${Math.max(horizontalScrollWidth, externalScrollbarMinWidth)}px` }}
                     />
                 </div>
@@ -4196,7 +4187,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                     onMouseEnter={(e) => e.currentTarget.style.background = darkMode ? '#303030' : '#f5f5f5'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                     onClick={() => {
-                        if (cellContextMenu.record) handleExportSelected('csv', cellContextMenu.record);
+                        if (cellContextMenu.record) handleExportSelected('csv', cellContextMenu.record).catch(console.error);
                         setCellContextMenu(prev => ({ ...prev, visible: false }));
                     }}
                 >
@@ -4211,7 +4202,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                     onMouseEnter={(e) => e.currentTarget.style.background = darkMode ? '#303030' : '#f5f5f5'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                     onClick={() => {
-                        if (cellContextMenu.record) handleExportSelected('xlsx', cellContextMenu.record);
+                        if (cellContextMenu.record) handleExportSelected('xlsx', cellContextMenu.record).catch(console.error);
                         setCellContextMenu(prev => ({ ...prev, visible: false }));
                     }}
                 >
@@ -4226,7 +4217,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                     onMouseEnter={(e) => e.currentTarget.style.background = darkMode ? '#303030' : '#f5f5f5'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                     onClick={() => {
-                        if (cellContextMenu.record) handleExportSelected('json', cellContextMenu.record);
+                        if (cellContextMenu.record) handleExportSelected('json', cellContextMenu.record).catch(console.error);
                         setCellContextMenu(prev => ({ ...prev, visible: false }));
                     }}
                 >
@@ -4241,7 +4232,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                     onMouseEnter={(e) => e.currentTarget.style.background = darkMode ? '#303030' : '#f5f5f5'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                     onClick={() => {
-                        if (cellContextMenu.record) handleExportSelected('html', cellContextMenu.record);
+                        if (cellContextMenu.record) handleExportSelected('html', cellContextMenu.record).catch(console.error);
                         setCellContextMenu(prev => ({ ...prev, visible: false }));
                     }}
                 >
@@ -4435,7 +4426,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                     border-radius: 999px;
                     box-shadow: ${floatingScrollbarThumbShadow};
                 }
-                .${gridId} .data-grid-external-hscroll {
+                .${gridId} .data-grid-external-horizontal-scroll {
                     position: absolute;
                     left: ${floatingScrollbarInset}px;
                     right: ${floatingScrollbarInset}px;
@@ -4446,22 +4437,22 @@ const DataGrid: React.FC<DataGridProps> = ({
                     background: transparent;
                     z-index: 24;
                 }
-                .${gridId} .data-grid-external-hscroll::-webkit-scrollbar {
+                .${gridId} .data-grid-external-horizontal-scroll::-webkit-scrollbar {
                     height: ${floatingScrollbarHeight}px;
                 }
-                .${gridId} .data-grid-external-hscroll::-webkit-scrollbar-track {
+                .${gridId} .data-grid-external-horizontal-scroll::-webkit-scrollbar-track {
                     background: ${horizontalScrollbarTrackBg};
                     border: 1px solid ${horizontalScrollbarTrackBorderColor};
                     border-radius: 999px;
                     box-shadow: ${horizontalScrollbarTrackShadow};
                 }
-                .${gridId} .data-grid-external-hscroll::-webkit-scrollbar-thumb {
+                .${gridId} .data-grid-external-horizontal-scroll::-webkit-scrollbar-thumb {
                     background: ${horizontalScrollbarThumbBg};
                     border: 1px solid ${horizontalScrollbarThumbBorderColor};
                     border-radius: 999px;
                     box-shadow: ${horizontalScrollbarThumbShadow};
                 }
-                .${gridId} .data-grid-external-hscroll-inner {
+                .${gridId} .data-grid-external-horizontal-scroll-inner {
                     height: 1px;
                 }
                 .${gridId} .data-grid-pagination-shell {
