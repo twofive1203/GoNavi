@@ -93,6 +93,24 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install UPX (macOS)
+        if: contains(matrix.platform, 'darwin')
+        run: |
+          brew install upx
+          upx --version
+
+      - name: Install UPX (Windows)
+        if: contains(matrix.platform, 'windows')
+        shell: pwsh
+        run: |
+          choco install upx --no-progress -y
+          $upxCmd = Get-Command upx -ErrorAction SilentlyContinue
+          if ($null -eq $upxCmd) {
+            Write-Error "❌ 未检测到 upx，无法保证 Windows 测试产物经过压缩"
+            exit 1
+          }
+          & upx --version
+
       - name: Install Linux Dependencies
         if: contains(matrix.platform, 'linux')
         run: |
@@ -104,6 +122,9 @@ jobs:
           else
             sudo apt-get install -y libwebkit2gtk-4.0-dev
           fi
+
+          sudo apt-get install -y upx-ucl || sudo apt-get install -y upx
+          upx --version
 
           sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || true
 
@@ -242,6 +263,22 @@ jobs:
             exit 1
           fi
           APP_NAME=$(basename "$APP_PATH")
+          APP_BIN=$(find "$APP_PATH/Contents/MacOS" -maxdepth 1 -type f | head -n 1)
+          if [ -z "$APP_BIN" ]; then
+            echo "未找到 macOS 应用主程序，无法进行 UPX 压缩"
+            exit 1
+          fi
+          BEFORE_BYTES=$(wc -c <"$APP_BIN" | tr -d '[:space:]')
+          echo "🗜️ 使用 UPX 压缩 macOS 可执行文件: $APP_BIN ..."
+          upx --best --lzma --force "$APP_BIN"
+          upx -t "$APP_BIN"
+          AFTER_BYTES=$(wc -c <"$APP_BIN" | tr -d '[:space:]')
+          if [ "$AFTER_BYTES" -lt "$BEFORE_BYTES" ]; then
+            SAVED_BYTES=$((BEFORE_BYTES - AFTER_BYTES))
+            awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" -v s="$SAVED_BYTES" 'BEGIN { printf "✅ macOS UPX 压缩完成：%.2fMB -> %.2fMB，减少 %.2fMB\n", b/1024/1024, a/1024/1024, s/1024/1024 }'
+          else
+            awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" 'BEGIN { printf "ℹ️ macOS UPX 压缩完成：%.2fMB -> %.2fMB\n", b/1024/1024, a/1024/1024 }'
+          fi
           codesign --force --deep --sign - "$APP_NAME"
           ZIP_NAME="GoNavi-${LABEL}-${{ matrix.os_name }}-${{ matrix.arch_name }}-run${GITHUB_RUN_NUMBER}.zip"
           DMG_NAME="GoNavi-${LABEL}-${{ matrix.os_name }}-${{ matrix.arch_name }}-run${GITHUB_RUN_NUMBER}.dmg"
@@ -270,7 +307,6 @@ jobs:
           Set-Location build/bin
           $target = "${{ matrix.build_name }}"
           $finalExeName = "GoNavi-$label-${{ matrix.os_name }}-${{ matrix.arch_name }}-run$env:GITHUB_RUN_NUMBER.exe"
-          $finalZipName = "GoNavi-$label-${{ matrix.os_name }}-${{ matrix.arch_name }}-run$env:GITHUB_RUN_NUMBER.zip"
           if (Test-Path "$target.exe") {
             $finalExe = "$target.exe"
           } elseif (Test-Path "$target") {
@@ -280,11 +316,25 @@ jobs:
             Write-Error "未找到构建产物 '$target'"
             exit 1
           }
+          $upxCmd = Get-Command upx -ErrorAction SilentlyContinue
+          if ($null -eq $upxCmd) {
+            Write-Error "❌ 未找到 upx，无法保证 Windows 测试产物经过压缩"
+            exit 1
+          }
+          $beforeBytes = (Get-Item -LiteralPath $finalExe).Length
+          Write-Host "🗜️ 使用 UPX 压缩 $finalExe ..."
+          & upx --best --lzma --force $finalExe | Out-Host
+          & upx -t $finalExe | Out-Host
+          $afterBytes = (Get-Item -LiteralPath $finalExe).Length
+          if ($afterBytes -lt $beforeBytes) {
+            $savedBytes = $beforeBytes - $afterBytes
+            Write-Host ("✅ UPX 压缩完成：{0:N2}MB -> {1:N2}MB，减少 {2:N2}MB" -f ($beforeBytes / 1MB), ($afterBytes / 1MB), ($savedBytes / 1MB))
+          } else {
+            Write-Host ("ℹ️ UPX 压缩完成：{0:N2}MB -> {1:N2}MB" -f ($beforeBytes / 1MB), ($afterBytes / 1MB))
+          }
           New-Item -ItemType Directory -Force -Path ..\..\artifacts | Out-Null
           Copy-Item -LiteralPath $finalExe -Destination "..\..\artifacts\$finalExeName" -Force
-          Compress-Archive -LiteralPath $finalExe -DestinationPath "..\..\artifacts\$finalZipName" -Force
           Get-FileHash "..\..\artifacts\$finalExeName" -Algorithm SHA256 | ForEach-Object { "{0} *{1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } | Out-File "..\..\artifacts\$finalExeName.sha256" -Encoding ascii
-          Get-FileHash "..\..\artifacts\$finalZipName" -Algorithm SHA256 | ForEach-Object { "{0} *{1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } | Out-File "..\..\artifacts\$finalZipName.sha256" -Encoding ascii
 
       - name: Package Linux
         if: contains(matrix.platform, 'linux')
@@ -306,6 +356,17 @@ jobs:
             exit 1
           fi
           chmod +x "$TARGET"
+          BEFORE_BYTES=$(wc -c <"$TARGET" | tr -d '[:space:]')
+          echo "🗜️ 使用 UPX 压缩 Linux 可执行文件: $TARGET ..."
+          upx --best --lzma --force "$TARGET"
+          upx -t "$TARGET"
+          AFTER_BYTES=$(wc -c <"$TARGET" | tr -d '[:space:]')
+          if [ "$AFTER_BYTES" -lt "$BEFORE_BYTES" ]; then
+            SAVED_BYTES=$((BEFORE_BYTES - AFTER_BYTES))
+            awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" -v s="$SAVED_BYTES" 'BEGIN { printf "✅ Linux UPX 压缩完成：%.2fMB -> %.2fMB，减少 %.2fMB\n", b/1024/1024, a/1024/1024, s/1024/1024 }'
+          else
+            awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" 'BEGIN { printf "ℹ️ Linux UPX 压缩完成：%.2fMB -> %.2fMB\n", b/1024/1024, a/1024/1024 }'
+          fi
           tar -czvf "../../artifacts/$TAR_NAME" "$TARGET"
           sha256sum "../../artifacts/$TAR_NAME" > "../../artifacts/$TAR_NAME.sha256"
 

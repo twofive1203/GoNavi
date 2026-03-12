@@ -2792,6 +2792,7 @@ func ensureOptionalDriverAgentBinary(a *App, definition driverDefinition, execut
 	driverType := normalizeDriverType(definition.Type)
 	displayName := resolveDriverDisplayName(definition)
 	forceSourceBuild := shouldForceSourceBuildForVersion(driverType, selectedVersion)
+	preferSourceBuildBeforeDownload := shouldPreferSourceBuildBeforeDownload(driverType, selectedVersion)
 	skipReuseCandidate := shouldSkipReusableAgentCandidate(driverType, selectedVersion)
 
 	info, err := os.Stat(executablePath)
@@ -2799,11 +2800,10 @@ func ensureOptionalDriverAgentBinary(a *App, definition driverDefinition, execut
 		if validateErr := db.ValidateOptionalDriverAgentExecutable(driverType, executablePath); validateErr != nil {
 			_ = os.Remove(executablePath)
 		} else {
-			hash, hashErr := hashFileSHA256(executablePath)
-			if hashErr != nil {
-				return "", "", fmt.Errorf("读取已安装 %s 驱动代理摘要失败：%w", displayName, hashErr)
+			// 用户点击“安装/重装”时应强制刷新驱动代理，避免沿用旧二进制导致修复不生效。
+			if removeErr := os.Remove(executablePath); removeErr != nil {
+				return "", "", fmt.Errorf("清理已安装 %s 驱动代理失败：%w", displayName, removeErr)
 			}
-			return fmt.Sprintf("local://existing/%s-driver-agent", driverType), hash, nil
 		}
 	}
 	if err == nil && info.IsDir() {
@@ -2834,6 +2834,22 @@ func ensureOptionalDriverAgentBinary(a *App, definition driverDefinition, execut
 	}
 
 	var downloadErrs []string
+	var sourceBuildAttempted bool
+	var sourceBuildErr error
+
+	if !forceSourceBuild && preferSourceBuildBeforeDownload {
+		sourceBuildAttempted = true
+		if a != nil {
+			a.emitDriverDownloadProgress(driverType, "downloading", 16, 100, fmt.Sprintf("优先使用本地源码构建 %s 驱动代理", displayName))
+		}
+		hash, buildErr := buildOptionalDriverAgentFromSource(definition, executablePath, selectedVersion)
+		if buildErr == nil {
+			return fmt.Sprintf("local://go-build/%s-driver-agent", driverType), hash, nil
+		}
+		sourceBuildErr = buildErr
+		logger.Warnf("预先本地构建 %s 驱动代理失败，将继续尝试下载预编译包：%v", displayName, buildErr)
+	}
+
 	if !forceSourceBuild {
 		downloadURLs := resolveOptionalDriverAgentDownloadURLs(definition, downloadURL)
 		if len(downloadURLs) > 0 {
@@ -2866,9 +2882,15 @@ func ensureOptionalDriverAgentBinary(a *App, definition driverDefinition, execut
 		a.emitDriverDownloadProgress(driverType, "downloading", 92, 100, "未命中预编译包，尝试开发态本地构建")
 	}
 
-	hash, buildErr := buildOptionalDriverAgentFromSource(definition, executablePath, selectedVersion)
-	if buildErr == nil {
-		return fmt.Sprintf("local://go-build/%s-driver-agent", driverType), hash, nil
+	var buildErr error
+	if sourceBuildAttempted {
+		buildErr = sourceBuildErr
+	} else {
+		hash, runErr := buildOptionalDriverAgentFromSource(definition, executablePath, selectedVersion)
+		buildErr = runErr
+		if buildErr == nil {
+			return fmt.Sprintf("local://go-build/%s-driver-agent", driverType), hash, nil
+		}
 	}
 
 	var parts []string
@@ -3086,12 +3108,25 @@ func shouldForceSourceBuildForVersion(driverType string, selectedVersion string)
 	return resolveMongoDriverMajorFromVersion(selectedVersion) == 1
 }
 
-func shouldSkipReusableAgentCandidate(driverType string, selectedVersion string) bool {
-	if normalizeDriverType(driverType) != "mongodb" {
+func shouldPreferSourceBuildBeforeDownload(driverType string, selectedVersion string) bool {
+	_ = selectedVersion
+	switch normalizeDriverType(driverType) {
+	case "kingbase":
+		// 金仓迭代期优先本地源码构建，避免下载到旧版本预编译代理导致修复不生效。
+		return true
+	default:
 		return false
 	}
+}
+
+func shouldSkipReusableAgentCandidate(driverType string, selectedVersion string) bool {
 	_ = selectedVersion
-	return true
+	switch normalizeDriverType(driverType) {
+	case "mongodb", "kingbase":
+		return true
+	default:
+		return false
+	}
 }
 
 func optionalDriverBuildTag(driverType string, selectedVersion string) (string, error) {

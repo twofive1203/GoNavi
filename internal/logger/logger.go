@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	envLogDir  = "GONAVI_LOG_DIR"
-	appDirName = "GoNavi"
+	envLogDir     = "GONAVI_LOG_DIR"
+	appHiddenDir  = ".GoNavi"
+	appLogDirName = "Logs"
 
 	logFileName         = "gonavi.log"
 	logRotateMaxBytes   = 10 * 1024 * 1024 // 10MB
@@ -37,7 +38,7 @@ func Init() {
 		defer logMu.Unlock()
 		logPath = path
 		logInst = log.New(out, "", log.Ldate|log.Ltime|log.Lmicroseconds)
-		logInst.Printf("[信息] 日志初始化完成，日志文件：%s", logPath)
+		logInst.Printf("[INFO] 日志初始化完成，日志文件：%s", logPath)
 	})
 }
 
@@ -62,15 +63,15 @@ func Close() {
 }
 
 func Infof(format string, args ...any) {
-	printf("信息", format, args...)
+	printf("INFO", format, args...)
 }
 
 func Warnf(format string, args ...any) {
-	printf("警告", format, args...)
+	printf("WARN", format, args...)
 }
 
 func Errorf(format string, args ...any) {
-	printf("错误", format, args...)
+	printf("ERROR", format, args...)
 }
 
 func Error(err error, format string, args ...any) {
@@ -115,37 +116,58 @@ func ErrorChain(err error) string {
 func printf(level string, format string, args ...any) {
 	Init()
 	logMu.Lock()
+	defer logMu.Unlock()
 	inst := logInst
-	logMu.Unlock()
 	if inst == nil {
 		return
 	}
 	inst.Printf("[%s] %s", level, fmt.Sprintf(format, args...))
+	if logFile != nil {
+		_ = logFile.Sync()
+	}
 }
 
 func initOutput() (string, io.Writer) {
 	dir := strings.TrimSpace(os.Getenv(envLogDir))
 	if dir == "" {
-		base, err := os.UserConfigDir()
-		if err != nil || strings.TrimSpace(base) == "" {
-			base = os.TempDir()
-		}
-		dir = filepath.Join(base, appDirName, "logs")
+		dir = defaultLogDir()
 	}
 
+	if path, writer, ok := openLogFile(dir); ok {
+		return path, writer
+	}
+
+	fallbackDir := filepath.Join(os.TempDir(), appHiddenDir, appLogDirName)
+	if path, writer, ok := openLogFile(fallbackDir); ok {
+		return path, writer
+	}
+
+	return "", os.Stderr
+}
+
+func defaultLogDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return filepath.Join(os.TempDir(), appHiddenDir, appLogDirName)
+	}
+	return filepath.Join(home, appHiddenDir, appLogDirName)
+}
+
+func openLogFile(dir string) (string, io.Writer, bool) {
+	if strings.TrimSpace(dir) == "" {
+		return "", nil, false
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return filepath.Join(dir, logFileName), os.Stderr
+		return "", nil, false
 	}
-
 	path := filepath.Join(dir, logFileName)
 	rotateIfNeeded(path, dir)
-
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		return path, os.Stderr
+		return "", nil, false
 	}
 	logFile = f
-	return path, f
+	return path, f, true
 }
 
 func rotateIfNeeded(path, dir string) {

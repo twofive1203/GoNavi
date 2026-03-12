@@ -13,6 +13,16 @@ import (
 	"GoNavi-Wails/internal/utils"
 )
 
+const testConnectionTimeoutUpperBoundSeconds = 12
+
+func normalizeTestConnectionConfig(config connection.ConnectionConfig) connection.ConnectionConfig {
+	normalized := config
+	if normalized.Timeout <= 0 || normalized.Timeout > testConnectionTimeoutUpperBoundSeconds {
+		normalized.Timeout = testConnectionTimeoutUpperBoundSeconds
+	}
+	return normalized
+}
+
 // Generic DB Methods
 
 func (a *App) DBConnect(config connection.ConnectionConfig) connection.QueryResult {
@@ -28,13 +38,16 @@ func (a *App) DBConnect(config connection.ConnectionConfig) connection.QueryResu
 }
 
 func (a *App) TestConnection(config connection.ConnectionConfig) connection.QueryResult {
-	_, err := a.getDatabaseForcePing(config)
+	testConfig := normalizeTestConnectionConfig(config)
+	started := time.Now()
+	logger.Infof("TestConnection 开始：%s", formatConnSummary(testConfig))
+	_, err := a.getDatabaseForcePing(testConfig)
 	if err != nil {
-		logger.Error(err, "TestConnection 连接测试失败：%s", formatConnSummary(config))
+		logger.Error(err, "TestConnection 连接测试失败：耗时=%s %s", time.Since(started).Round(time.Millisecond), formatConnSummary(testConfig))
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	logger.Infof("TestConnection 连接测试成功：%s", formatConnSummary(config))
+	logger.Infof("TestConnection 连接测试成功：耗时=%s %s", time.Since(started).Round(time.Millisecond), formatConnSummary(testConfig))
 	return connection.QueryResult{Success: true, Message: "连接成功"}
 }
 

@@ -72,25 +72,30 @@ func setGlobalProxyConfig(enabled bool, proxyConfig connection.ProxyConfig) (glo
 }
 
 func (a *App) ConfigureGlobalProxy(enabled bool, proxyConfig connection.ProxyConfig) connection.QueryResult {
+	before := currentGlobalProxyConfig()
 	snapshot, err := setGlobalProxyConfig(enabled, proxyConfig)
 	if err != nil {
 		return connection.QueryResult{Success: false, Message: err.Error()}
 	}
 
-	if snapshot.Enabled {
-		authState := ""
-		if strings.TrimSpace(snapshot.Proxy.User) != "" {
-			authState = "（认证：已配置）"
+	// 前端可能在同一配置下重复触发同步（例如严格模式或状态回放），
+	// 这里做幂等日志，避免重复刷屏。
+	if !globalProxySnapshotEqual(before, snapshot) {
+		if snapshot.Enabled {
+			authState := ""
+			if strings.TrimSpace(snapshot.Proxy.User) != "" {
+				authState = "（认证：已配置）"
+			}
+			logger.Infof(
+				"全局代理已启用：%s://%s:%d%s",
+				strings.ToLower(strings.TrimSpace(snapshot.Proxy.Type)),
+				strings.TrimSpace(snapshot.Proxy.Host),
+				snapshot.Proxy.Port,
+				authState,
+			)
+		} else {
+			logger.Infof("全局代理已关闭")
 		}
-		logger.Infof(
-			"全局代理已启用：%s://%s:%d%s",
-			strings.ToLower(strings.TrimSpace(snapshot.Proxy.Type)),
-			strings.TrimSpace(snapshot.Proxy.Host),
-			snapshot.Proxy.Port,
-			authState,
-		)
-	} else {
-		logger.Infof("全局代理已关闭")
 	}
 
 	return connection.QueryResult{
@@ -98,6 +103,24 @@ func (a *App) ConfigureGlobalProxy(enabled bool, proxyConfig connection.ProxyCon
 		Message: "全局代理配置已生效",
 		Data:    snapshot,
 	}
+}
+
+func globalProxySnapshotEqual(a, b globalProxySnapshot) bool {
+	if a.Enabled != b.Enabled {
+		return false
+	}
+	if !a.Enabled {
+		return true
+	}
+	return proxyConfigEqual(a.Proxy, b.Proxy)
+}
+
+func proxyConfigEqual(a, b connection.ProxyConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(a.Type), strings.TrimSpace(b.Type)) &&
+		strings.TrimSpace(a.Host) == strings.TrimSpace(b.Host) &&
+		a.Port == b.Port &&
+		strings.TrimSpace(a.User) == strings.TrimSpace(b.User) &&
+		a.Password == b.Password
 }
 
 func (a *App) GetGlobalProxyConfig() connection.QueryResult {

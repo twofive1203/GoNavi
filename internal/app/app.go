@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -218,6 +220,7 @@ func wrapConnectError(config connection.ConnectionConfig, err error) error {
 	if err == nil {
 		return nil
 	}
+	err = sanitizeMongoConnectErrorLabel(config, err)
 
 	var netErr net.Error
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
@@ -231,6 +234,73 @@ func wrapConnectError(config connection.ConnectionConfig, err error) error {
 	return withLogHint{err: err, logPath: logger.Path()}
 }
 
+type errorMessageOverride struct {
+	message string
+	cause   error
+}
+
+func (e errorMessageOverride) Error() string {
+	return e.message
+}
+
+func (e errorMessageOverride) Unwrap() error {
+	return e.cause
+}
+
+func sanitizeMongoConnectErrorLabel(config connection.ConnectionConfig, err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.ToLower(strings.TrimSpace(config.Type)) != "mongodb" {
+		return err
+	}
+	if mongoConnectUsesTLS(config) {
+		return err
+	}
+	original := err.Error()
+	rewritten := strings.ReplaceAll(original, "SSL 主库凭据", "主库凭据")
+	rewritten = strings.ReplaceAll(rewritten, "SSL 从库凭据", "从库凭据")
+	if rewritten == original {
+		return err
+	}
+	return errorMessageOverride{
+		message: rewritten,
+		cause:   err,
+	}
+}
+
+func mongoConnectUsesTLS(config connection.ConnectionConfig) bool {
+	if config.UseSSL {
+		return true
+	}
+	uriText := strings.TrimSpace(config.URI)
+	if uriText == "" {
+		return false
+	}
+	parsed, err := url.Parse(uriText)
+	if err != nil {
+		return false
+	}
+	for _, key := range []string{"tls", "ssl"} {
+		if enabled, known := parseMongoBool(parsed.Query().Get(key)); known {
+			return enabled
+		}
+	}
+	return strings.EqualFold(strings.TrimSpace(parsed.Scheme), "mongodb+srv")
+}
+
+func parseMongoBool(raw string) (enabled bool, known bool) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "1", "true", "t", "yes", "y", "on", "required":
+		return true, true
+	case "0", "false", "f", "no", "n", "off", "disable", "disabled":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
 type withLogHint struct {
 	err     error
 	logPath string
@@ -238,10 +308,15 @@ type withLogHint struct {
 
 func (e withLogHint) Error() string {
 	message := normalizeErrorMessage(e.err)
-	if strings.TrimSpace(e.logPath) == "" {
+	path := strings.TrimSpace(e.logPath)
+	if path == "" {
 		return message
 	}
-	return fmt.Sprintf("%s（详细日志：%s）", message, e.logPath)
+	info, statErr := os.Stat(path)
+	if statErr != nil || info.IsDir() || info.Size() <= 0 {
+		return message
+	}
+	return fmt.Sprintf("%s（详细日志：%s）", message, path)
 }
 
 func (e withLogHint) Unwrap() error {

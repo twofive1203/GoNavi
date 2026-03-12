@@ -15,8 +15,10 @@ func TestNormalizeKingbaseIdentifier(t *testing.T) {
 		{name: "double quoted", in: `""ldf_server""`, want: "ldf_server"},
 		{name: "quad quoted", in: `""""ldf_server""""`, want: "ldf_server"},
 		{name: "escaped quoted", in: `\"ldf_server\"`, want: "ldf_server"},
+		{name: "double escaped quoted", in: `\\\"ldf_server\\\"`, want: "ldf_server"},
 		{name: "backtick quoted", in: "`ldf_server`", want: "ldf_server"},
 		{name: "bracket quoted", in: "[ldf_server]", want: "ldf_server"},
+		{name: "embedded double quotes", in: `ldf""server`, want: "ldfserver"},
 	}
 
 	for _, tt := range tests {
@@ -99,6 +101,7 @@ func TestSplitKingbaseQualifiedTable(t *testing.T) {
 		{name: "plain qualified", in: "ldf_server.t_user", wantSchema: "ldf_server", wantTable: "t_user"},
 		{name: "double quoted qualified", in: `""ldf_server"".""t_user""`, wantSchema: "ldf_server", wantTable: "t_user"},
 		{name: "escaped qualified", in: `\"ldf_server\".\"t_user\"`, wantSchema: "ldf_server", wantTable: "t_user"},
+		{name: "double escaped qualified", in: `\\\"ldf_server\\\".\\\"t_user\\\"`, wantSchema: "ldf_server", wantTable: "t_user"},
 		{name: "bracket qualified", in: "[ldf_server].[t_user]", wantSchema: "ldf_server", wantTable: "t_user"},
 		{name: "table only", in: `""t_user""`, wantSchema: "", wantTable: "t_user"},
 	}

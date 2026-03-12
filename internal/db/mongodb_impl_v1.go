@@ -152,10 +152,14 @@ func applyMongoURI(config connection.ConnectionConfig) connection.ConnectionConf
 		}
 	}
 
-	if len(config.Hosts) == 0 && len(hostsFromURI) > 0 {
+	explicitHost := strings.TrimSpace(config.Host) != ""
+	explicitHosts := len(config.Hosts) > 0
+
+	// 显式填写的 host/hosts 优先级高于 URI，避免表单 host 被 URI 中的 localhost 覆盖。
+	if !explicitHost && !explicitHosts && len(hostsFromURI) > 0 {
 		config.Hosts = hostsFromURI
 	}
-	if strings.TrimSpace(config.Host) == "" && len(hostsFromURI) > 0 {
+	if !explicitHost && !explicitHosts && len(hostsFromURI) > 0 {
 		host, port, ok := parseHostPortWithDefault(hostsFromURI[0], defaultPort)
 		if ok {
 			config.Host = host
@@ -282,9 +286,44 @@ func buildMongoAuthAttempts(config connection.ConnectionConfig) []connection.Con
 	return attempts
 }
 
+func mongoURIForcesTLS(uriText string) bool {
+	trimmed := strings.TrimSpace(uriText)
+	if trimmed == "" {
+		return false
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+	query := parsed.Query()
+	for _, key := range []string{"tls", "ssl"} {
+		value := strings.ToLower(strings.TrimSpace(query.Get(key)))
+		switch value {
+		case "1", "true", "t", "yes", "y", "required":
+			return true
+		}
+	}
+	return false
+}
+
+func mongoAttemptSSLLabel(config connection.ConnectionConfig, fallbackToPlain bool) string {
+	if fallbackToPlain {
+		return "明文回退"
+	}
+	if mongoURIForcesTLS(config.URI) {
+		return "SSL"
+	}
+	enabled, _ := resolveMongoTLSSettings(config)
+	if enabled {
+		return "SSL"
+	}
+	return "明文"
+}
+
 func (m *MongoDBV1) Connect(config connection.ConnectionConfig) error {
 	runConfig := applyMongoURI(config)
 	connectConfig := runConfig
+	sshRouteHint := ""
 
 	if runConfig.UseSSH && runConfig.MongoSRV {
 		return fmt.Errorf("MongoDB SRV 记录模式暂不支持 SSH 隧道")
@@ -325,6 +364,7 @@ func (m *MongoDBV1) Connect(config connection.ConnectionConfig) error {
 		localConfig.URI = ""
 		localConfig.Hosts = []string{normalizeMongoAddress(host, port)}
 		connectConfig = localConfig
+		sshRouteHint = fmt.Sprintf("SSH隧道 %s -> %s:%d", forwarder.LocalAddr, targetHost, targetPort)
 		logger.Infof("MongoDB 通过本地端口转发连接：%s -> %s:%d", forwarder.LocalAddr, targetHost, targetPort)
 	}
 
@@ -338,20 +378,32 @@ func (m *MongoDBV1) Connect(config connection.ConnectionConfig) error {
 	if shouldTrySSLPreferredFallback(connectConfig) {
 		sslAttempts = append(sslAttempts, withSSLDisabled(connectConfig))
 	}
+	totalAttempts := 0
+	for _, attemptConfig := range sslAttempts {
+		totalAttempts += len(buildMongoAuthAttempts(attemptConfig))
+	}
+	attemptNo := 0
 
 	var errorDetails []string
 	for sslIndex, sslConfig := range sslAttempts {
-		sslLabel := "SSL"
-		if sslIndex > 0 {
-			sslLabel = "明文回退"
-		}
+		sslLabel := mongoAttemptSSLLabel(sslConfig, sslIndex > 0)
 
 		attemptConfigs := buildMongoAuthAttempts(sslConfig)
 		for index, attemptConfig := range attemptConfigs {
+			attemptNo++
 			authLabel := "主库凭据"
 			if index > 0 {
 				authLabel = "从库凭据"
 			}
+			targets := collectMongoSeeds(attemptConfig)
+			if len(targets) == 0 {
+				targets = append(targets, normalizeMongoAddress(attemptConfig.Host, attemptConfig.Port))
+			}
+			attemptStarted := time.Now()
+			logger.Infof(
+				"MongoDB(v1) 连接尝试：%d/%d 模式=%s 凭据=%s 目标=%s 代理=%t",
+				attemptNo, totalAttempts, sslLabel, authLabel, strings.Join(targets, ","), attemptConfig.UseProxy,
+			)
 
 			if sslIndex > 0 {
 				attemptConfig.URI = ""
@@ -372,7 +424,13 @@ func (m *MongoDBV1) Connect(config connection.ConnectionConfig) error {
 			client, err := mongo.Connect(connectCtx, clientOpts)
 			connectCancel()
 			if err != nil {
-				errorDetails = append(errorDetails, fmt.Sprintf("%s %s连接失败: %v", sslLabel, authLabel, err))
+				logger.Warnf("MongoDB(v1) 连接尝试失败：%d/%d 模式=%s 凭据=%s 耗时=%s 错误=%v",
+					attemptNo, totalAttempts, sslLabel, authLabel, time.Since(attemptStarted).Round(time.Millisecond), err)
+				detail := fmt.Sprintf("%s %s连接失败: %v", sslLabel, authLabel, err)
+				if sshRouteHint != "" {
+					detail = fmt.Sprintf("%s（%s）", detail, sshRouteHint)
+				}
+				errorDetails = append(errorDetails, detail)
 				continue
 			}
 
@@ -382,9 +440,17 @@ func (m *MongoDBV1) Connect(config connection.ConnectionConfig) error {
 				_ = client.Disconnect(ctx)
 				cancel()
 				m.client = nil
-				errorDetails = append(errorDetails, fmt.Sprintf("%s %s验证失败: %v", sslLabel, authLabel, err))
+				logger.Warnf("MongoDB(v1) 连接尝试验证失败：%d/%d 模式=%s 凭据=%s 耗时=%s 错误=%v",
+					attemptNo, totalAttempts, sslLabel, authLabel, time.Since(attemptStarted).Round(time.Millisecond), err)
+				detail := fmt.Sprintf("%s %s验证失败: %v", sslLabel, authLabel, err)
+				if sshRouteHint != "" {
+					detail = fmt.Sprintf("%s（%s）", detail, sshRouteHint)
+				}
+				errorDetails = append(errorDetails, detail)
 				continue
 			}
+			logger.Infof("MongoDB(v1) 连接尝试成功：%d/%d 模式=%s 凭据=%s 耗时=%s",
+				attemptNo, totalAttempts, sslLabel, authLabel, time.Since(attemptStarted).Round(time.Millisecond))
 			if sslIndex > 0 {
 				logger.Warnf("MongoDB(v1) SSL 优先连接失败，已回退至明文连接")
 			}

@@ -88,6 +88,24 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install UPX (macOS)
+        if: contains(matrix.platform, 'darwin')
+        run: |
+          brew install upx
+          upx --version
+
+      - name: Install UPX (Windows)
+        if: contains(matrix.platform, 'windows')
+        shell: pwsh
+        run: |
+          choco install upx --no-progress -y
+          $upxCmd = Get-Command upx -ErrorAction SilentlyContinue
+          if ($null -eq $upxCmd) {
+            Write-Error "❌ 未检测到 upx，无法保证 Windows 产物经过压缩"
+            exit 1
+          }
+          & upx --version
+
       # Linux Dependencies (GTK3, WebKit2GTK required by Wails)
       - name: Install Linux Dependencies
         if: contains(matrix.platform, 'linux')
@@ -101,6 +119,9 @@ jobs:
           else
             sudo apt-get install -y libwebkit2gtk-4.0-dev
           fi
+
+          sudo apt-get install -y upx-ucl || sudo apt-get install -y upx
+          upx --version
 
           # AppImage 运行/打包可能需要 FUSE2。不同发行版/版本包名不同，做兼容兜底。
           sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || true
@@ -277,6 +298,23 @@ jobs:
             exit 1
           fi
           APP_NAME=$(basename "$APP_PATH")
+
+          APP_BIN=$(find "$APP_PATH/Contents/MacOS" -maxdepth 1 -type f | head -n 1)
+          if [ -z "$APP_BIN" ]; then
+            echo "❌ 未找到 macOS 应用主程序，无法进行 UPX 压缩!"
+            exit 1
+          fi
+          BEFORE_BYTES=$(wc -c <"$APP_BIN" | tr -d '[:space:]')
+          echo "🗜️ 正在使用 UPX 压缩 macOS 可执行文件: $APP_BIN ..."
+          upx --best --lzma --force "$APP_BIN"
+          upx -t "$APP_BIN"
+          AFTER_BYTES=$(wc -c <"$APP_BIN" | tr -d '[:space:]')
+          if [ "$AFTER_BYTES" -lt "$BEFORE_BYTES" ]; then
+            SAVED_BYTES=$((BEFORE_BYTES - AFTER_BYTES))
+            awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" -v s="$SAVED_BYTES" 'BEGIN { printf "✅ macOS UPX 压缩完成：%.2fMB -> %.2fMB，减少 %.2fMB\n", b/1024/1024, a/1024/1024, s/1024/1024 }'
+          else
+            awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" 'BEGIN { printf "ℹ️ macOS UPX 压缩完成：%.2fMB -> %.2fMB\n", b/1024/1024, a/1024/1024 }'
+          fi
           
           echo "🔏 正在进行 Ad-hoc 签名..."
           # 注意：Ad-hoc + hardened runtime（--options runtime）在未配置 entitlements 时，
@@ -301,7 +339,7 @@ jobs:
           mv "$DMG_NAME" "../../$FINAL_NAME"
 
       # Windows Packaging
-      - name: Package Windows Portable Zip
+      - name: Package Windows EXE
         if: contains(matrix.platform, 'windows')
         shell: pwsh
         run: |
@@ -312,7 +350,6 @@ jobs:
           }
           $target = "${{ matrix.build_name }}"
           $finalExeName = "GoNavi-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}${{ matrix.artifact_suffix }}.exe"
-          $finalZipName = "GoNavi-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}${{ matrix.artifact_suffix }}.zip"
 
           if (Test-Path "$target.exe") {
               $finalExe = "$target.exe"
@@ -324,11 +361,25 @@ jobs:
               exit 1
           }
 
-          Write-Host "📦 生成 Windows 可执行文件 $finalExeName..."
-          Copy-Item -LiteralPath $finalExe -Destination "..\\..\\$finalExeName" -Force
+          $upxCmd = Get-Command upx -ErrorAction SilentlyContinue
+          if ($null -eq $upxCmd) {
+              Write-Error "❌ 未找到 upx，无法保证 Windows 产物经过压缩"
+              exit 1
+          }
+          $beforeBytes = (Get-Item -LiteralPath $finalExe).Length
+          Write-Host "🗜️ 使用 UPX 压缩 $finalExe ..."
+          & upx --best --lzma --force $finalExe | Out-Host
+          & upx -t $finalExe | Out-Host
+          $afterBytes = (Get-Item -LiteralPath $finalExe).Length
+          if ($afterBytes -lt $beforeBytes) {
+              $savedBytes = $beforeBytes - $afterBytes
+              Write-Host ("✅ UPX 压缩完成：{0:N2}MB -> {1:N2}MB，减少 {2:N2}MB" -f ($beforeBytes / 1MB), ($afterBytes / 1MB), ($savedBytes / 1MB))
+          } else {
+              Write-Host ("ℹ️ UPX 压缩完成：{0:N2}MB -> {1:N2}MB" -f ($beforeBytes / 1MB), ($afterBytes / 1MB))
+          }
 
-          Write-Host "📦 生成 Windows 压缩包 $finalZipName..."
-          Compress-Archive -LiteralPath $finalExe -DestinationPath "..\\..\\$finalZipName" -Force
+          Write-Host "📦 输出 Windows 可执行文件 $finalExeName..."
+          Copy-Item -LiteralPath $finalExe -Destination "..\\..\\$finalExeName" -Force
 
       # Linux Packaging (tar.gz and AppImage)
       - name: Package Linux
@@ -347,6 +398,17 @@ jobs:
           fi
 
           chmod +x "$TARGET"
+          BEFORE_BYTES=$(wc -c <"$TARGET" | tr -d '[:space:]')
+          echo "🗜️ 正在使用 UPX 压缩 Linux 可执行文件: $TARGET ..."
+          upx --best --lzma --force "$TARGET"
+          upx -t "$TARGET"
+          AFTER_BYTES=$(wc -c <"$TARGET" | tr -d '[:space:]')
+          if [ "$AFTER_BYTES" -lt "$BEFORE_BYTES" ]; then
+              SAVED_BYTES=$((BEFORE_BYTES - AFTER_BYTES))
+              awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" -v s="$SAVED_BYTES" 'BEGIN { printf "✅ Linux UPX 压缩完成：%.2fMB -> %.2fMB，减少 %.2fMB\n", b/1024/1024, a/1024/1024, s/1024/1024 }'
+          else
+              awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" 'BEGIN { printf "ℹ️ Linux UPX 压缩完成：%.2fMB -> %.2fMB\n", b/1024/1024, a/1024/1024 }'
+          fi
 
           # 1. Create tar.gz
           echo "📦 正在打包 $TAR_NAME..."
@@ -419,7 +481,6 @@ jobs:
           path: |
             GoNavi-*.dmg
             GoNavi-*.exe
-            GoNavi-*.zip
             GoNavi-*.tar.gz
             GoNavi-*.AppImage
             drivers/**
