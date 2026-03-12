@@ -91,12 +91,6 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install UPX (macOS)
-        if: contains(matrix.platform, 'darwin')
-        run: |
-          brew install upx
-          upx --version
-
       - name: Install UPX (Windows)
         if: contains(matrix.platform, 'windows')
         shell: pwsh
@@ -304,20 +298,10 @@ jobs:
 
           APP_BIN=$(find "$APP_PATH/Contents/MacOS" -maxdepth 1 -type f | head -n 1)
           if [ -z "$APP_BIN" ]; then
-            echo "❌ 未找到 macOS 应用主程序，无法进行 UPX 压缩!"
+            echo "❌ 未找到 macOS 应用主程序!"
             exit 1
           fi
-          BEFORE_BYTES=$(wc -c <"$APP_BIN" | tr -d '[:space:]')
-          echo "🗜️ 正在使用 UPX 压缩 macOS 可执行文件: $APP_BIN ..."
-          upx --best --lzma --force --force-macos "$APP_BIN"
-          upx -t "$APP_BIN"
-          AFTER_BYTES=$(wc -c <"$APP_BIN" | tr -d '[:space:]')
-          if [ "$AFTER_BYTES" -lt "$BEFORE_BYTES" ]; then
-            SAVED_BYTES=$((BEFORE_BYTES - AFTER_BYTES))
-            awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" -v s="$SAVED_BYTES" 'BEGIN { printf "✅ macOS UPX 压缩完成：%.2fMB -> %.2fMB，减少 %.2fMB\n", b/1024/1024, a/1024/1024, s/1024/1024 }'
-          else
-            awk -v b="$BEFORE_BYTES" -v a="$AFTER_BYTES" 'BEGIN { printf "ℹ️ macOS UPX 压缩完成：%.2fMB -> %.2fMB\n", b/1024/1024, a/1024/1024 }'
-          fi
+          echo "ℹ️ macOS 产物不执行 UPX 压缩，保留原始主程序。"
           
           echo "🔏 正在进行 Ad-hoc 签名..."
           # 注意：Ad-hoc + hardened runtime（--options runtime）在未配置 entitlements 时，
