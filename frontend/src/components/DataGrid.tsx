@@ -31,6 +31,7 @@ import 'react-resizable/css/styles.css';
 import { buildOrderBySQL, buildPaginatedSelectSQL, buildWhereSQL, escapeLiteral, quoteIdentPart, quoteQualifiedIdent, withSortBufferTuningSQL, type FilterCondition } from '../utils/sql';
 import { isMacLikePlatform, normalizeOpacityForPlatform, resolveAppearanceValues } from '../utils/appearance';
 import { getDataSourceCapabilities } from '../utils/dataSourceCapabilities';
+import { calculateTableBodyBottomPadding } from './dataGridLayout';
 
 // --- Error Boundary ---
 interface DataGridErrorBoundaryState {
@@ -919,12 +920,14 @@ const DataGrid: React.FC<DataGridProps> = ({
   const toolbarBottomPadding = 6;
   const filterTopPadding = 2;
   const panelFrameColor = darkMode ? 'rgba(0, 0, 0, 0.42)' : 'rgba(0, 0, 0, 0.18)';
-  const floatingScrollbarGap = 6;
+  const floatingScrollbarGap = 8;
+  const floatingScrollbarBottomOffset = 0;
   const floatingScrollbarInset = 10;
   const floatingScrollbarHeight = 10;
-  const floatingScrollbarThumbBg = darkMode ? 'rgba(255,255,255,0.34)' : 'rgba(0,0,0,0.22)';
-  const floatingScrollbarThumbBorderColor = darkMode ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.32)';
-  const floatingScrollbarThumbShadow = darkMode ? '0 4px 12px rgba(0,0,0,0.28)' : '0 4px 10px rgba(0,0,0,0.12)';
+  const floatingScrollbarThumbBg = darkMode ? 'rgba(255,255,255,0.68)' : 'rgba(0,0,0,0.44)';
+  const floatingScrollbarThumbBorderColor = darkMode ? 'rgba(255,255,255,0.26)' : 'rgba(255,255,255,0.52)';
+  const floatingScrollbarThumbShadow = darkMode ? '0 4px 14px rgba(0,0,0,0.42)' : '0 4px 10px rgba(0,0,0,0.20)';
+  const verticalScrollbarTrackBg = darkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
   const horizontalScrollbarTrackBg = 'transparent';
   const horizontalScrollbarTrackBorderColor = 'transparent';
   const horizontalScrollbarTrackShadow = 'none';
@@ -1310,19 +1313,33 @@ const DataGrid: React.FC<DataGridProps> = ({
       const rawHeaderHeight = headerEl ? headerEl.getBoundingClientRect().height : NaN;
       const headerHeight =
           Number.isFinite(rawHeaderHeight) && rawHeaderHeight >= 24 && rawHeaderHeight <= 120 ? rawHeaderHeight : 42;
+      const paginationEl = target.querySelector('.data-grid-pagination-wrap') as HTMLElement | null;
+      const rawPaginationHeight = paginationEl ? paginationEl.getBoundingClientRect().height : 0;
+      const paginationHeight =
+          Number.isFinite(rawPaginationHeight) && rawPaginationHeight > 0 ? rawPaginationHeight : 0;
 
       const bodyEl = target.querySelector('.ant-table-body') as HTMLElement | null;
-      const virtualHolderEl = target.querySelector('.rc-virtual-list-holder') as HTMLElement | null;
-      const scrollableEl = virtualHolderEl || bodyEl;
+      const virtualBodyEl = target.querySelector('.ant-table-tbody-virtual-holder') as HTMLElement | null;
+      const rcVirtualHolderEl = target.querySelector('.rc-virtual-list-holder') as HTMLElement | null;
+      const virtualScrollbarEl = target.querySelector('.ant-table-tbody-virtual-scrollbar-horizontal') as HTMLElement | null;
+      const scrollableEl = virtualBodyEl || rcVirtualHolderEl || bodyEl;
       const hasHorizontalOverflow = !!scrollableEl && (scrollableEl.scrollWidth - scrollableEl.clientWidth > 1);
-      // 外部横向滚动条采用悬浮覆盖，不再通过压缩表格高度制造独立底部空白层；
-      // 只给 body 增加底部内边距，确保最后一行可以完整滚到胶囊条上方。
-      const nextBodyBottomPadding = hasHorizontalOverflow
-          ? floatingScrollbarHeight + floatingScrollbarGap + 4
-          : 0;
+      // 普通表格可通过 body 底部内边距避开悬浮横向滚动条；
+      // 但虚拟表格的内部横向滚动轨道会直接覆盖在可视区底部，需要同时从 y 高度里扣掉安全区。
+      const nextBodyBottomPadding = calculateTableBodyBottomPadding({
+          hasHorizontalOverflow,
+          floatingScrollbarHeight,
+          floatingScrollbarGap,
+      });
       setTableBodyBottomPadding(nextBodyBottomPadding);
       const extraBottom = 2;
-      const nextHeight = Math.max(100, Math.floor(height - headerHeight - extraBottom));
+      const virtualScrollbarViewportReserve = hasHorizontalOverflow && !!virtualScrollbarEl
+          ? Math.ceil(virtualScrollbarEl.getBoundingClientRect().height || (floatingScrollbarHeight + floatingScrollbarGap + 4))
+          : 0;
+      const nextHeight = Math.max(
+          100,
+          Math.floor(height - headerHeight - paginationHeight - extraBottom - virtualScrollbarViewportReserve)
+      );
       setTableHeight(nextHeight);
   }, [floatingScrollbarGap, floatingScrollbarHeight]);
 
@@ -3242,7 +3259,7 @@ const DataGrid: React.FC<DataGridProps> = ({
       // macOS 在“自动隐藏滚动条”模式下容易误判为无横向滚动，预留 2px 触发稳定滚动轨道。
       return Math.max(baseWidth, tableViewportWidth + 2);
   }, [totalWidth, isMacLike, tableViewportWidth]);
-  const horizontalScrollVisible = viewMode === 'table' && !enableVirtual && tableScrollX > tableViewportWidth + 1;
+  const horizontalScrollVisible = viewMode === 'table' && tableScrollX > tableViewportWidth + 1;
   const horizontalScrollWidth = Math.max(externalScrollbarMinWidth, tableScrollX);
   const tableScrollConfig = useMemo(() => ({ x: tableScrollX, y: tableHeight }), [tableScrollX, tableHeight]);
   const tableComponents = useMemo(() => {
@@ -3259,11 +3276,41 @@ const DataGrid: React.FC<DataGridProps> = ({
   }, [enableInlineEditableCell, useContextMenuRow]);
   const tableOnRow = useMemo(() => (useContextMenuRow ? rowPropsFactory : undefined), [useContextMenuRow, rowPropsFactory]);
 
+  const resolveVirtualHorizontalElements = useCallback((tableContainer: HTMLElement) => {
+      const holderEl = tableContainer.querySelector('.ant-table-tbody-virtual-holder') as HTMLElement | null;
+      const innerEl = holderEl?.querySelector('.ant-table-tbody-virtual-holder-inner') as HTMLElement | null;
+      const headerEl = tableContainer.querySelector('.ant-table-header') as HTMLElement | null;
+      return { holderEl, innerEl, headerEl };
+  }, []);
+
+  const readVirtualHorizontalOffset = useCallback((tableContainer: HTMLElement): number => {
+      const { innerEl, headerEl } = resolveVirtualHorizontalElements(tableContainer);
+      const marginLeft = innerEl ? Math.abs(parseFloat(innerEl.style.marginLeft) || 0) : 0;
+      const headerLeft = headerEl ? Math.max(0, headerEl.scrollLeft) : 0;
+      return Math.max(marginLeft, headerLeft);
+  }, [resolveVirtualHorizontalElements]);
+
+  const applyVirtualHorizontalOffset = useCallback((tableContainer: HTMLElement, nextOffset: number) => {
+      const { holderEl, innerEl, headerEl } = resolveVirtualHorizontalElements(tableContainer);
+      if (!(holderEl instanceof HTMLElement) || !(innerEl instanceof HTMLElement)) {
+          return false;
+      }
+
+      const maxScroll = Math.max(0, tableScrollX - holderEl.clientWidth);
+      const clampedOffset = Math.max(0, Math.min(maxScroll, nextOffset));
+      innerEl.style.marginLeft = `${-clampedOffset}px`;
+      if (headerEl) {
+          headerEl.scrollLeft = clampedOffset;
+      }
+      return true;
+  }, [resolveVirtualHorizontalElements, tableScrollX]);
+
   const pickHorizontalScrollTargets = useCallback((tableContainer: HTMLElement): HTMLElement[] => {
+      const virtualBody = tableContainer.querySelector('.ant-table-tbody-virtual-holder');
       const body = tableContainer.querySelector('.ant-table-body');
       const content = tableContainer.querySelector('.ant-table-content');
       const virtualHolder = tableContainer.querySelector('.rc-virtual-list-holder');
-      const candidates = [virtualHolder, body, content].filter((node): node is HTMLElement => node instanceof HTMLElement);
+      const candidates = [virtualBody, virtualHolder, body, content].filter((node): node is HTMLElement => node instanceof HTMLElement);
       if (candidates.length === 0) {
           return [];
       }
@@ -3283,6 +3330,19 @@ const DataGrid: React.FC<DataGridProps> = ({
       if (!(externalScroll instanceof HTMLDivElement) || horizontalSyncSourceRef.current === 'external') {
           return;
       }
+      const tableContainer = tableContainerRef.current;
+      if (enableVirtual && tableContainer instanceof HTMLElement) {
+          const nextScrollLeft = readVirtualHorizontalOffset(tableContainer);
+          if (Math.abs(lastTableScrollLeftRef.current - nextScrollLeft) < 1 && Math.abs(externalScroll.scrollLeft - nextScrollLeft) < 1) {
+              return;
+          }
+          lastTableScrollLeftRef.current = nextScrollLeft;
+          if (Math.abs(externalScroll.scrollLeft - nextScrollLeft) > 1) {
+              externalScroll.scrollLeft = nextScrollLeft;
+              lastExternalScrollLeftRef.current = nextScrollLeft;
+          }
+          return;
+      }
       const nextTargets = targets && targets.length > 0 ? targets : tableScrollTargetsRef.current;
       if (!nextTargets || nextTargets.length === 0) {
           return;
@@ -3300,7 +3360,7 @@ const DataGrid: React.FC<DataGridProps> = ({
           externalScroll.scrollLeft = nextScrollLeft;
           lastExternalScrollLeftRef.current = nextScrollLeft;
       }
-  }, []);
+  }, [enableVirtual, readVirtualHorizontalOffset]);
 
   const applyExternalScrollToTableTargets = useCallback(() => {
       const externalScroll = externalHorizontalScrollRef.current;
@@ -3322,6 +3382,14 @@ const DataGrid: React.FC<DataGridProps> = ({
       lastExternalScrollLeftRef.current = externalScroll.scrollLeft;
 
       horizontalSyncSourceRef.current = 'external';
+      const tableContainer = tableContainerRef.current;
+      if (enableVirtual && tableContainer instanceof HTMLElement) {
+          if (applyVirtualHorizontalOffset(tableContainer, externalScroll.scrollLeft)) {
+              lastTableScrollLeftRef.current = externalScroll.scrollLeft;
+          }
+          horizontalSyncSourceRef.current = '';
+          return;
+      }
       liveTargets.forEach((target) => {
           if (target.scrollWidth <= target.clientWidth + 1) {
               return;
@@ -3332,9 +3400,9 @@ const DataGrid: React.FC<DataGridProps> = ({
       });
       lastTableScrollLeftRef.current = externalScroll.scrollLeft;
       horizontalSyncSourceRef.current = '';
-  }, []);
+  }, [applyVirtualHorizontalOffset, enableVirtual]);
 
-  // 非虚拟模式：外部水平滚动条的 wheel 处理（通过原生事件绑定，确保 preventDefault 生效）
+  // 外部水平滚动条的 wheel 处理（通过原生事件绑定，确保 preventDefault 生效）
   useEffect(() => {
       const externalScroll = externalHorizontalScrollRef.current;
       if (!externalScroll || !horizontalScrollVisible) return;
@@ -3359,10 +3427,10 @@ const DataGrid: React.FC<DataGridProps> = ({
       };
   }, [horizontalScrollVisible]);
 
-  // 非虚拟模式：支持在数据区直接使用触摸板/Shift+滚轮进行横向滚动。
-  // 某些平台在表格内容未铺满一页时，不会把水平手势正确路由到表格 body，导致只能在表头/底部滚动条区域滚动。
+  // 支持在数据区直接使用触摸板/Shift+滚轮进行横向滚动。
+  // 虚拟表格与普通表格统一走外部横向滚动条，避免内部轨道覆盖最后一行。
   useEffect(() => {
-      if (viewMode !== 'table' || enableVirtual) return;
+      if (viewMode !== 'table') return;
       const container = tableContainerRef.current;
       if (!(container instanceof HTMLElement)) return;
 
@@ -3389,20 +3457,47 @@ const DataGrid: React.FC<DataGridProps> = ({
           if (!isTableDataAreaTarget(event.target)) return;
 
           const targets = pickHorizontalScrollTargets(container);
-          const activeTarget = targets.find((target) => target.scrollWidth > target.clientWidth + 1) || targets[0];
-          if (!(activeTarget instanceof HTMLElement)) return;
-
-          const maxScrollLeft = Math.max(0, activeTarget.scrollWidth - activeTarget.clientWidth);
-          if (maxScrollLeft <= 0) return;
-
-          const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, activeTarget.scrollLeft + horizontalDelta));
-          if (Math.abs(nextScrollLeft - activeTarget.scrollLeft) < 1) return;
-
           event.preventDefault();
           event.stopPropagation();
 
           horizontalSyncSourceRef.current = 'table';
-          activeTarget.scrollLeft = nextScrollLeft;
+          let nextScrollLeft = 0;
+          if (enableVirtual) {
+              const currentOffset = readVirtualHorizontalOffset(container);
+              const { holderEl } = resolveVirtualHorizontalElements(container);
+              if (!(holderEl instanceof HTMLElement)) {
+                  horizontalSyncSourceRef.current = '';
+                  return;
+              }
+              const maxScrollLeft = Math.max(0, tableScrollX - holderEl.clientWidth);
+              if (maxScrollLeft <= 0) {
+                  horizontalSyncSourceRef.current = '';
+                  return;
+              }
+              nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, currentOffset + horizontalDelta));
+              if (Math.abs(nextScrollLeft - currentOffset) < 1) {
+                  horizontalSyncSourceRef.current = '';
+                  return;
+              }
+              applyVirtualHorizontalOffset(container, nextScrollLeft);
+          } else {
+              const activeTarget = targets.find((target) => target.scrollWidth > target.clientWidth + 1) || targets[0];
+              if (!(activeTarget instanceof HTMLElement)) {
+                  horizontalSyncSourceRef.current = '';
+                  return;
+              }
+              const maxScrollLeft = Math.max(0, activeTarget.scrollWidth - activeTarget.clientWidth);
+              if (maxScrollLeft <= 0) {
+                  horizontalSyncSourceRef.current = '';
+                  return;
+              }
+              nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, activeTarget.scrollLeft + horizontalDelta));
+              if (Math.abs(nextScrollLeft - activeTarget.scrollLeft) < 1) {
+                  horizontalSyncSourceRef.current = '';
+                  return;
+              }
+              activeTarget.scrollLeft = nextScrollLeft;
+          }
           lastTableScrollLeftRef.current = nextScrollLeft;
 
           const externalScroll = externalHorizontalScrollRef.current;
@@ -3417,13 +3512,13 @@ const DataGrid: React.FC<DataGridProps> = ({
       return () => {
           container.removeEventListener('wheel', handleContainerHorizontalWheel, { capture: true } as EventListenerOptions);
       };
-  }, [viewMode, enableVirtual, pickHorizontalScrollTargets]);
+  }, [applyVirtualHorizontalOffset, enableVirtual, pickHorizontalScrollTargets, readVirtualHorizontalOffset, resolveVirtualHorizontalElements, tableScrollX, viewMode]);
 
   useEffect(() => {
       if (viewMode !== 'table') return;
       const rafId = requestAnimationFrame(() => recalculateTableMetrics(containerRef.current));
       return () => cancelAnimationFrame(rafId);
-  }, [viewMode, totalWidth, mergedDisplayData.length, recalculateTableMetrics]);
+  }, [viewMode, totalWidth, mergedDisplayData.length, pagination?.total, pagination?.pageSize, recalculateTableMetrics]);
 
   useEffect(() => {
       if (viewMode !== 'table' || !onScrollSnapshotChange) return;
@@ -3514,71 +3609,6 @@ const DataGrid: React.FC<DataGridProps> = ({
 
       return () => cancelAnimationFrame(rafId);
   }, [viewMode, mergedDisplayData.length, scrollSnapshot, pickHorizontalScrollTargets, pickVerticalScrollTarget, onScrollSnapshotChange]);
-
-  // 虚拟模式下，在容器级别监听 wheel 事件，当鼠标在底部水平滚动条区域时拦截并转为水平滚动
-  useEffect(() => {
-      if (viewMode !== 'table' || !enableVirtual) return;
-      const container = tableContainerRef.current;
-      if (!container) return;
-
-      // 滚动条区域高度：滚动条高度 + 间距 + 容错
-      const scrollbarZoneHeight = floatingScrollbarHeight + floatingScrollbarGap + 8;
-
-      const handleContainerWheel = (e: WheelEvent) => {
-          // 判断鼠标是否在底部滚动条区域
-          const containerRect = container.getBoundingClientRect();
-          if (e.clientY < containerRect.bottom - scrollbarZoneHeight) return;
-
-          // 适配 antd 的虚拟列表类名
-          const holderEl = container.querySelector('.ant-table-tbody-virtual-holder') as HTMLElement | null;
-          const innerEl = holderEl?.querySelector('.ant-table-tbody-virtual-holder-inner') as HTMLElement | null;
-          
-          if (!innerEl || !holderEl) return;
-
-          const dominantDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-          if (Math.abs(dominantDelta) < 0.5) return;
-
-          e.preventDefault();
-          e.stopPropagation();
-
-          // 读取当前 marginLeft（负值表示向右偏移）
-          const currentMarginLeft = parseFloat(innerEl.style.marginLeft) || 0;
-          const contentWidth = tableScrollX;
-          const viewportWidth = holderEl.clientWidth;
-          const maxScroll = Math.max(0, contentWidth - viewportWidth);
-
-          const currentOffset = Math.abs(currentMarginLeft);
-          const newOffset = Math.min(maxScroll, Math.max(0, currentOffset + dominantDelta));
-
-          // 直接更新内容位置
-          innerEl.style.marginLeft = `${-newOffset}px`;
-
-          // 同步 scrollbar thumb 位置
-          const scrollbarEl = container.querySelector('.ant-table-tbody-virtual-scrollbar-horizontal') as HTMLElement | null;
-          if (scrollbarEl && maxScroll > 0) {
-              const thumbEl = scrollbarEl.querySelector('[class*="scrollbar-thumb"]') as HTMLElement | null;
-              if (thumbEl) {
-                  const ratio = newOffset / maxScroll;
-                  const thumbWidth = parseFloat(thumbEl.style.width) || thumbEl.offsetWidth;
-                  const trackWidth = scrollbarEl.clientWidth;
-                  const thumbMaxOffset = trackWidth - thumbWidth;
-                  thumbEl.style.left = `${ratio * thumbMaxOffset}px`;
-              }
-          }
-
-          // 同步表头水平位置
-          const headerEl = container.querySelector('.ant-table-header') as HTMLElement | null;
-          if (headerEl) {
-              headerEl.scrollLeft = newOffset;
-          }
-      };
-
-      container.addEventListener('wheel', handleContainerWheel, { passive: false, capture: true });
-
-      return () => {
-          container.removeEventListener('wheel', handleContainerWheel, { capture: true } as EventListenerOptions);
-      };
-  }, [viewMode, enableVirtual, tableScrollX, floatingScrollbarHeight, floatingScrollbarGap]);
 
   useEffect(() => {
       if (viewMode !== 'table') return;
@@ -3965,7 +3995,7 @@ const DataGrid: React.FC<DataGridProps> = ({
        )}
        </div>
 
-	       <div ref={containerRef} style={{ flex: 1, overflow: 'hidden', position: 'relative', minHeight: 0, background: bgContent, borderRadius: panelRadius, border: `1px solid ${panelFrameColor}`, boxSizing: 'border-box' }}>
+	       <div ref={containerRef} style={{ flex: 1, overflow: 'hidden', position: 'relative', minHeight: 0, display: 'flex', flexDirection: 'column', background: bgContent, borderRadius: panelRadius, border: `1px solid ${panelFrameColor}`, boxSizing: 'border-box' }}>
 	        {contextHolder}
             <Modal
                 title="编辑行"
@@ -4116,7 +4146,13 @@ const DataGrid: React.FC<DataGridProps> = ({
             <div
                 ref={tableContainerRef}
                 className={`data-grid-table-wrap${horizontalScrollVisible ? ' data-grid-table-wrap-external-active' : ''}`}
-                style={{ height: '100%', minHeight: 0, position: 'relative' }}
+                style={{
+                    flex: '1 1 auto',
+                    minHeight: 0,
+                    position: 'relative',
+                    boxSizing: 'border-box',
+                    paddingBottom: enableVirtual ? tableBodyBottomPadding : 0,
+                }}
             >
                 <Form component={false} form={form}>
                     <DataContext.Provider value={dataContextValue}>
@@ -4443,7 +4479,7 @@ const DataGrid: React.FC<DataGridProps> = ({
        </div>
        
        {pagination && (
-           <div style={{ padding: '12px 0 0', borderTop: 'none', display: 'flex', justifyContent: 'flex-end' }}>
+           <div className="data-grid-pagination-wrap" style={{ padding: '12px 0 0', borderTop: 'none', display: 'flex', justifyContent: 'flex-end' }}>
                <div className="data-grid-pagination-shell">
                    <div className="data-grid-pagination-summary" aria-live="polite">
                        <span className="data-grid-pagination-kicker">结果集</span>
@@ -4556,6 +4592,16 @@ const DataGrid: React.FC<DataGridProps> = ({
                     box-sizing: border-box;
                     scroll-padding-bottom: ${tableBodyBottomPadding}px;
                 }
+                .${gridId} .ant-table-tbody-virtual-holder,
+                .${gridId} .rc-virtual-list-holder {
+                    padding-bottom: ${tableBodyBottomPadding}px;
+                    box-sizing: border-box;
+                    scroll-padding-bottom: ${tableBodyBottomPadding}px;
+                }
+                .${gridId} .ant-table-tbody-virtual-holder-inner {
+                    padding-bottom: ${tableBodyBottomPadding}px;
+                    box-sizing: border-box;
+                }
                 .${gridId} .data-grid-table-wrap {
                     width: 100%;
                     max-width: 100%;
@@ -4565,22 +4611,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                     display: none !important;
                 }
                 .${gridId} .ant-table-tbody-virtual-scrollbar.ant-table-tbody-virtual-scrollbar-horizontal {
-                    height: ${floatingScrollbarHeight + 4}px !important;
-                    bottom: ${floatingScrollbarGap}px !important;
-                    left: ${floatingScrollbarInset}px !important;
-                    right: ${floatingScrollbarInset}px !important;
-                    background: transparent !important;
-                    visibility: visible !important;
-                    pointer-events: auto !important;
-                    z-index: 24;
-                }
-                .${gridId} .ant-table-tbody-virtual-scrollbar.ant-table-tbody-virtual-scrollbar-horizontal .ant-table-tbody-virtual-scrollbar-thumb {
-                    background: ${horizontalScrollbarThumbBg} !important;
-                    border: 1px solid ${horizontalScrollbarThumbBorderColor} !important;
-                    border-radius: 999px !important;
-                    box-shadow: ${horizontalScrollbarThumbShadow} !important;
-                    height: ${floatingScrollbarHeight}px !important;
-                    margin-top: 2px;
+                    display: none !important;
                 }
                 .${gridId} .data-grid-table-wrap.data-grid-table-wrap-external-active .ant-table-content {
                     overflow-x: hidden !important;
@@ -4588,6 +4619,10 @@ const DataGrid: React.FC<DataGridProps> = ({
                 .${gridId} .data-grid-table-wrap.data-grid-table-wrap-external-active .ant-table-body {
                     overflow-x: hidden !important;
                     overflow-y: auto !important;
+                }
+                .${gridId} .data-grid-table-wrap.data-grid-table-wrap-external-active .ant-table-tbody-virtual-holder,
+                .${gridId} .data-grid-table-wrap.data-grid-table-wrap-external-active .rc-virtual-list-holder {
+                    overflow-x: hidden !important;
                 }
                 .${gridId} .ant-table-body {
                     scrollbar-width: thin;
@@ -4598,8 +4633,9 @@ const DataGrid: React.FC<DataGridProps> = ({
                     height: 0;
                 }
                 .${gridId} .ant-table-body::-webkit-scrollbar-track {
-                    background: transparent;
+                    background: ${verticalScrollbarTrackBg};
                     margin: 8px 0;
+                    border-radius: 999px;
                 }
                 .${gridId} .ant-table-body::-webkit-scrollbar-thumb {
                     background: ${floatingScrollbarThumbBg};
@@ -4616,8 +4652,9 @@ const DataGrid: React.FC<DataGridProps> = ({
                     height: 0;
                 }
                 .${gridId} .rc-virtual-list-holder::-webkit-scrollbar-track {
-                    background: transparent;
+                    background: ${verticalScrollbarTrackBg};
                     margin: 8px 0;
+                    border-radius: 999px;
                 }
                 .${gridId} .rc-virtual-list-holder::-webkit-scrollbar-thumb {
                     background: ${floatingScrollbarThumbBg};
@@ -4629,7 +4666,7 @@ const DataGrid: React.FC<DataGridProps> = ({
                     position: absolute;
                     left: ${floatingScrollbarInset}px;
                     right: ${floatingScrollbarInset}px;
-                    bottom: ${floatingScrollbarGap}px;
+                    bottom: ${floatingScrollbarBottomOffset}px;
                     height: ${floatingScrollbarHeight + 4}px;
                     overflow-x: auto;
                     overflow-y: hidden;
