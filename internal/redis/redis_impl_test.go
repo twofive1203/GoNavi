@@ -1,6 +1,9 @@
 package redis
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestSanitizeRedisPassword(t *testing.T) {
 	tests := []struct {
@@ -77,5 +80,42 @@ func TestSanitizeRedisPassword(t *testing.T) {
 				t.Errorf("sanitizeRedisPassword(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestIsRedisKeyGone(t *testing.T) {
+	tests := []struct {
+		name    string
+		keyType string
+		ttl     int64
+		want    bool
+	}{
+		{name: "type none", keyType: "none", ttl: -2, want: true},
+		{name: "type none without ttl", keyType: "none", ttl: -1, want: true},
+		{name: "missing by ttl", keyType: "string", ttl: -2, want: true},
+		{name: "normal string", keyType: "string", ttl: 30, want: false},
+		{name: "permanent hash", keyType: "hash", ttl: -1, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRedisKeyGone(tt.keyType, tt.ttl); got != tt.want {
+				t.Fatalf("isRedisKeyGone(%q, %d)=%v, want %v", tt.keyType, tt.ttl, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeRedisGetValueError(t *testing.T) {
+	err := normalizeRedisGetValueError("none", -2)
+	if !errors.Is(err, ErrRedisKeyGone) {
+		t.Fatalf("expected ErrRedisKeyGone, got %v", err)
+	}
+	if err == nil || err.Error() != "Redis Key 不存在或已过期" {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+
+	if normalizeRedisGetValueError("hash", -1) != nil {
+		t.Fatal("expected nil for supported existing key")
 	}
 }

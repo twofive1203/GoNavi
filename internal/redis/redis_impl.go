@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 )
+
+var ErrRedisKeyGone = errors.New("Redis Key 不存在或已过期")
 
 // RedisClientImpl implements RedisClient using go-redis
 type RedisClientImpl struct {
@@ -472,20 +475,29 @@ func (r *RedisClientImpl) loadRedisKeyInfos(ctx context.Context, keys []string) 
 			if ttlErr != nil && ttlErr != redis.Nil {
 				ttlValue = -2
 			}
+			ttlSeconds := toRedisTTLSeconds(ttlValue)
+			if isRedisKeyGone(keyType, ttlSeconds) {
+				continue
+			}
 			result = append(result, RedisKeyInfo{
 				Key:  r.toDisplayKey(key),
 				Type: keyType,
-				TTL:  toRedisTTLSeconds(ttlValue),
+				TTL:  ttlSeconds,
 			})
 		}
 		return result
 	}
 
 	for i, key := range keys {
+		keyType := typeResults[i].Val()
+		ttlSeconds := toRedisTTLSeconds(ttlResults[i].Val())
+		if isRedisKeyGone(keyType, ttlSeconds) {
+			continue
+		}
 		result = append(result, RedisKeyInfo{
 			Key:  r.toDisplayKey(key),
-			Type: typeResults[i].Val(),
-			TTL:  toRedisTTLSeconds(ttlResults[i].Val()),
+			Type: keyType,
+			TTL:  ttlSeconds,
 		})
 	}
 	return result
@@ -499,6 +511,17 @@ func toRedisTTLSeconds(ttl time.Duration) int64 {
 		return -2
 	}
 	return int64(ttl.Seconds())
+}
+
+func isRedisKeyGone(keyType string, ttl int64) bool {
+	return keyType == "none" || ttl == -2
+}
+
+func normalizeRedisGetValueError(keyType string, ttl int64) error {
+	if isRedisKeyGone(keyType, ttl) {
+		return ErrRedisKeyGone
+	}
+	return nil
 }
 
 // GetKeyType returns the type of a key
@@ -594,6 +617,9 @@ func (r *RedisClientImpl) GetValue(key string) (*RedisValue, error) {
 	}
 
 	ttl, _ := r.GetTTL(key)
+	if err := normalizeRedisGetValueError(keyType, ttl); err != nil {
+		return nil, err
+	}
 	physicalKey := r.toPhysicalKey(key)
 
 	result := &RedisValue{

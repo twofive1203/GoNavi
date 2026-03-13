@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Layout, Button, ConfigProvider, theme, Dropdown, MenuProps, message, Modal, Spin, Slider, Progress, Switch, Input, InputNumber, Select } from 'antd';
+import { Layout, Button, ConfigProvider, theme, message, Modal, Spin, Slider, Progress, Switch, Input, InputNumber, Select } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { PlusOutlined, ConsoleSqlOutlined, UploadOutlined, DownloadOutlined, CloudDownloadOutlined, BugOutlined, ToolOutlined, GlobalOutlined, InfoCircleOutlined, GithubOutlined, SkinOutlined, CheckOutlined, MinusOutlined, BorderOutlined, CloseOutlined, SettingOutlined, LinkOutlined, BgColorsOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { BrowserOpenURL, Environment, EventsOn, Quit, WindowFullscreen, WindowGetSize, WindowIsFullscreen, WindowIsMaximised, WindowMaximise, WindowMinimise, WindowSetSize, WindowToggleMaximise, WindowUnfullscreen } from '../wailsjs/runtime';
@@ -12,6 +12,7 @@ import LogPanel from './components/LogPanel';
 import { useStore } from './store';
 import { SavedConnection } from './types';
 import { blurToFilter, normalizeBlurForPlatform, normalizeOpacityForPlatform, isWindowsPlatform, resolveAppearanceValues } from './utils/appearance';
+import { buildOverlayWorkbenchTheme } from './utils/overlayWorkbenchTheme';
 import {
   SHORTCUT_ACTION_META,
   SHORTCUT_ACTION_ORDER,
@@ -477,15 +478,7 @@ function App() {
       justifyContent: 'center',
       gap: 6,
   }), [blurFilter, darkMode, effectiveUiScale, isOpaqueUtilityMode, utilityButtonBgColor, utilityButtonBorderColor, utilityButtonShadow]);
-  const utilityDropdownShellStyle = useMemo(() => ({
-      borderRadius: 14,
-      padding: 6,
-      background: darkMode ? 'linear-gradient(180deg, rgba(20,26,38,0.96) 0%, rgba(13,17,26,0.98) 100%)' : 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(246,248,252,0.98) 100%)',
-      border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(16,24,40,0.08)',
-      boxShadow: darkMode ? '0 20px 48px rgba(0,0,0,0.32)' : '0 16px 36px rgba(15,23,42,0.12)',
-      backdropFilter: darkMode ? 'blur(16px)' : 'none',
-      overflow: 'hidden',
-  }), [darkMode]);
+  const overlayTheme = useMemo(() => buildOverlayWorkbenchTheme(darkMode), [darkMode]);
 
   const sidebarQuickActionBaseStyle = useMemo(() => ({
       height: Math.max(34, Math.round(36 * effectiveUiScale)),
@@ -517,63 +510,56 @@ function App() {
       color: '#2a1f00',
     }), [sidebarQuickActionBaseStyle]);
 
-  const utilityMenuTheme = useMemo(() => ({
-      components: {
-          Menu: {
-              popupBg: 'transparent',
-              darkPopupBg: 'transparent',
-              itemBg: 'transparent',
-              darkItemBg: 'transparent',
-              subMenuItemBg: 'transparent',
-              itemColor: darkMode ? 'rgba(255,255,255,0.88)' : '#162033',
-              itemHoverColor: darkMode ? '#fff7d6' : '#0f172a',
-              itemHoverBg: darkMode ? 'rgba(255,214,102,0.10)' : 'rgba(24,144,255,0.08)',
-              itemSelectedColor: darkMode ? '#ffd666' : '#1677ff',
-              itemSelectedBg: darkMode ? 'rgba(255,214,102,0.14)' : 'rgba(24,144,255,0.12)',
-              itemBorderRadius: 10,
-              itemMarginBlock: 4,
-              itemMarginInline: 0,
-              itemPaddingInline: 12,
-              itemHeight: 40,
-              groupTitleColor: darkMode ? 'rgba(255,255,255,0.48)' : 'rgba(16,24,40,0.48)',
-          },
-      },
-  }), [darkMode]);
-  const renderUtilityDropdown = (menu: React.ReactNode) => (
-      <ConfigProvider theme={utilityMenuTheme}>
-          <div style={{ ...utilityDropdownShellStyle, minWidth: 220 }}>
-              {menu}
-          </div>
-      </ConfigProvider>
-  );
   const utilityModalShellStyle = useMemo(() => ({
-      background: darkMode ? 'linear-gradient(180deg, rgba(20,26,38,0.96) 0%, rgba(13,17,26,0.98) 100%)' : 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(246,248,252,0.98) 100%)',
-      border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(16,24,40,0.08)',
-      boxShadow: darkMode ? '0 24px 56px rgba(0,0,0,0.32)' : '0 18px 42px rgba(15,23,42,0.12)',
-      backdropFilter: darkMode ? 'blur(18px)' : 'none',
-  }), [darkMode]);
+      background: overlayTheme.shellBg,
+      border: overlayTheme.shellBorder,
+      boxShadow: overlayTheme.shellShadow,
+      backdropFilter: overlayTheme.shellBackdropFilter,
+  }), [overlayTheme]);
   const utilityPanelStyle = useMemo(() => ({
       padding: 16,
       borderRadius: 14,
-      border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(16,24,40,0.08)',
-      background: darkMode ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.84)',
-  }), [darkMode]);
+      border: overlayTheme.sectionBorder,
+      background: overlayTheme.sectionBg,
+  }), [overlayTheme]);
   const utilityMutedTextStyle = useMemo(() => ({
-      color: darkMode ? 'rgba(255,255,255,0.5)' : 'rgba(16,24,40,0.55)',
+      color: overlayTheme.mutedText,
       fontSize: 12,
       lineHeight: 1.6,
-  }), [darkMode]);
+  }), [overlayTheme]);
   const renderUtilityModalTitle = (icon: React.ReactNode, title: string, description: string) => (
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 12, display: 'grid', placeItems: 'center', background: darkMode ? 'rgba(255,214,102,0.12)' : 'rgba(24,144,255,0.1)', color: darkMode ? '#ffd666' : '#1677ff', flexShrink: 0 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 12, display: 'grid', placeItems: 'center', background: overlayTheme.iconBg, color: overlayTheme.iconColor, flexShrink: 0 }}>
               {icon}
           </div>
           <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: darkMode ? '#f5f7ff' : '#162033' }}>{title}</div>
-              <div style={{ marginTop: 4, color: darkMode ? 'rgba(255,255,255,0.5)' : 'rgba(16,24,40,0.55)', fontSize: 12, lineHeight: 1.6 }}>{description}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: overlayTheme.titleText }}>{title}</div>
+              <div style={{ marginTop: 4, color: overlayTheme.mutedText, fontSize: 12, lineHeight: 1.6 }}>{description}</div>
           </div>
       </div>
   );
+  const utilityActionCardStyle = useMemo(() => ({
+      width: '100%',
+      minHeight: 68,
+      borderRadius: 14,
+      border: overlayTheme.sectionBorder,
+      background: overlayTheme.sectionBg,
+      color: overlayTheme.titleText,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'flex-start',
+      gap: 14,
+      paddingInline: 16,
+      boxShadow: 'none',
+      fontSize: 15,
+      fontWeight: 600,
+  }), [overlayTheme]);
+  const utilityActionHintStyle = useMemo(() => ({
+      fontSize: 12,
+      color: overlayTheme.mutedText,
+      fontWeight: 400,
+      marginTop: 2,
+  }), [overlayTheme]);
 
   const sidebarHorizontalPadding = 10;
   
@@ -975,40 +961,7 @@ function App() {
       }
   };
 
-  const toolsMenu: MenuProps['items'] = [
-      {
-          key: 'import',
-          label: '导入连接配置',
-          icon: <UploadOutlined />,
-          onClick: handleImportConnections
-      },
-      {
-          key: 'export',
-          label: '导出连接配置',
-          icon: <DownloadOutlined />,
-          onClick: handleExportConnections
-      },
-      {
-          key: 'sync',
-          label: '数据同步',
-          icon: <UploadOutlined rotate={90} />,
-          onClick: () => setIsSyncModalOpen(true)
-      },
-      {
-          key: 'drivers',
-          label: '驱动管理',
-          icon: <SettingOutlined />,
-          onClick: () => setIsDriverModalOpen(true)
-      },
-      { type: 'divider' },
-      {
-          key: 'shortcut-settings',
-          label: '快捷键管理',
-          icon: <LinkOutlined />,
-          onClick: () => setIsShortcutModalOpen(true)
-      }
-  ];
-
+  const [isToolsModalOpen, setIsToolsModalOpen] = useState(false);
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
   const [themeModalSection, setThemeModalSection] = useState<'theme' | 'appearance'>('theme');
   const [isAppearanceModalOpen, setIsAppearanceModalOpen] = useState(false);
@@ -1493,9 +1446,7 @@ function App() {
             <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 <div style={{ padding: `12px ${sidebarHorizontalPadding}px 8px`, borderBottom: 'none', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8, width: '100%' }}>
-                        <Dropdown menu={{ items: toolsMenu }} placement="bottomLeft" dropdownRender={renderUtilityDropdown}>
-                            <Button type="text" icon={<ToolOutlined />} title="工具" style={utilityButtonStyle}>工具</Button>
-                        </Dropdown>
+                        <Button type="text" icon={<ToolOutlined />} title="工具" style={utilityButtonStyle} onClick={() => setIsToolsModalOpen(true)}>工具</Button>
                         <Button type="text" icon={<GlobalOutlined />} title="代理" style={utilityButtonStyle} onClick={() => setIsProxyModalOpen(true)}>代理</Button>
                         <Button type="text" icon={<SkinOutlined />} title="主题" style={utilityButtonStyle} onClick={() => setIsThemeModalOpen(true)}>主题</Button>
                         <Button type="text" icon={<InfoCircleOutlined />} title="关于" style={utilityButtonStyle} onClick={() => setIsAboutOpen(true)}>关于</Button>
@@ -1589,6 +1540,79 @@ function App() {
             initialValues={editingConnection}
             onOpenDriverManager={handleOpenDriverManagerFromConnection}
           />
+          <Modal
+            title={renderUtilityModalTitle(<ToolOutlined />, '工具中心', '集中处理连接配置、同步、驱动和快捷键相关操作。')}
+            open={isToolsModalOpen}
+            onCancel={() => setIsToolsModalOpen(false)}
+            footer={null}
+            width={560}
+            styles={{ content: utilityModalShellStyle, header: { background: 'transparent', borderBottom: 'none', paddingBottom: 8 }, body: { paddingTop: 8 }, footer: { background: 'transparent', borderTop: 'none', paddingTop: 10 } }}
+          >
+            <div style={{ display: 'grid', gap: 12, padding: '12px 0' }}>
+              {[
+                {
+                  key: 'import',
+                  icon: <UploadOutlined />,
+                  title: '导入连接配置',
+                  description: '从本地文件恢复连接列表。',
+                  onClick: () => {
+                    setIsToolsModalOpen(false);
+                    void handleImportConnections();
+                  },
+                },
+                {
+                  key: 'export',
+                  icon: <DownloadOutlined />,
+                  title: '导出连接配置',
+                  description: '导出当前连接与可见配置字段。',
+                  onClick: () => {
+                    setIsToolsModalOpen(false);
+                    void handleExportConnections();
+                  },
+                },
+                {
+                  key: 'sync',
+                  icon: <UploadOutlined rotate={90} />,
+                  title: '数据同步',
+                  description: '进入跨源同步工作流。',
+                  onClick: () => {
+                    setIsToolsModalOpen(false);
+                    setIsSyncModalOpen(true);
+                  },
+                },
+                {
+                  key: 'drivers',
+                  icon: <SettingOutlined />,
+                  title: '驱动管理',
+                  description: '安装、更新或移除数据库驱动。',
+                  onClick: () => {
+                    setIsToolsModalOpen(false);
+                    setIsDriverModalOpen(true);
+                  },
+                },
+                {
+                  key: 'shortcut-settings',
+                  icon: <LinkOutlined />,
+                  title: '快捷键管理',
+                  description: '查看并调整全局快捷键绑定。',
+                  onClick: () => {
+                    setIsToolsModalOpen(false);
+                    setIsShortcutModalOpen(true);
+                  },
+                },
+              ].map((item) => (
+                <Button key={item.key} type="text" style={utilityActionCardStyle} onClick={item.onClick}>
+                  <span style={{ width: 36, height: 36, borderRadius: 12, display: 'grid', placeItems: 'center', background: overlayTheme.iconBg, color: overlayTheme.iconColor, flexShrink: 0 }}>
+                    {item.icon}
+                  </span>
+                  <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+                    <span>{item.title}</span>
+                    <span style={utilityActionHintStyle}>{item.description}</span>
+                  </span>
+                </Button>
+              ))}
+            </div>
+          </Modal>
           <DataSyncModal
             open={isSyncModalOpen}
             onClose={() => setIsSyncModalOpen(false)}

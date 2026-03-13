@@ -17,6 +17,7 @@ dist/
 GoNavi-Wails
 GoNavi-Wails.exe
 .ace-tool/
+.superpowers/
 .claude/
 tmpclaude-*
 

@@ -37,6 +37,91 @@ body, #root {
   padding-right: 8px;
 }
 
+.redis-viewer-workbench .ant-tree {
+    background: transparent;
+}
+
+.redis-viewer-workbench .ant-tree .ant-tree-list-holder-inner,
+.redis-viewer-workbench .ant-tree .ant-tree-list-holder-inner .ant-tree-treenode {
+    width: 100% !important;
+}
+
+.redis-viewer-workbench .ant-tree .ant-tree-node-content-wrapper {
+    min-height: 36px;
+    border-radius: 14px;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    outline: none !important;
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto !important;
+}
+
+.redis-viewer-workbench .ant-tree .ant-tree-node-content-wrapper:hover,
+.redis-viewer-workbench .ant-tree .ant-tree-node-content-wrapper:active,
+.redis-viewer-workbench .ant-tree .ant-tree-node-content-wrapper:focus,
+.redis-viewer-workbench .ant-tree .ant-tree-node-content-wrapper:focus-visible,
+.redis-viewer-workbench .ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected,
+.redis-viewer-workbench .ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected:hover {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    outline: none !important;
+}
+
+.redis-viewer-workbench .ant-tree .ant-tree-treenode {
+    padding: 2px 0;
+    width: 100%;
+    border-radius: 14px;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    border: none;
+    align-items: center;
+    position: relative;
+    z-index: 0;
+    display: flex !important;
+    box-sizing: border-box;
+}
+
+.redis-viewer-workbench .ant-tree .ant-tree-switcher {
+    width: 0 !important;
+    min-width: 0 !important;
+    margin-inline-end: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    background: transparent !important;
+}
+
+.redis-viewer-workbench .ant-tree .ant-tree-switcher:hover,
+.redis-viewer-workbench .ant-tree .ant-tree-switcher:active,
+.redis-viewer-workbench .ant-tree .ant-tree-switcher:focus {
+    background: transparent !important;
+}
+
+.redis-viewer-workbench .redis-tree-expander-button:hover,
+.redis-viewer-workbench .redis-tree-expander-button:focus-visible {
+    background: transparent !important;
+    outline: none;
+}
+
+.redis-viewer-workbench .ant-radio-group .ant-radio-button-wrapper {
+    border-radius: 10px;
+    margin-inline-end: 6px;
+}
+
+.redis-viewer-workbench .ant-radio-group .ant-radio-button-wrapper:last-child {
+    margin-inline-end: 0;
+}
+
+.redis-viewer-workbench .ant-table {
+    background: transparent;
+}
+
+.redis-viewer-workbench .ant-table-wrapper .ant-table-thead > tr > th {
+    font-weight: 700;
+}
+
 /* Scrollbar styling for dark mode */
 body[data-theme='dark'] ::-webkit-scrollbar {
     width: 10px;
@@ -97,6 +182,16 @@ body[data-theme='dark'] .ant-tree .ant-tree-node-content-wrapper.ant-tree-node-s
     color: rgba(255, 236, 179, 0.98) !important;
 }
 
+body[data-theme='dark'] .redis-viewer-workbench .ant-tree .ant-tree-treenode:hover {
+    background: rgba(255, 255, 255, 0.05) !important;
+}
+
+body[data-theme='dark'] .redis-viewer-workbench .ant-tree .ant-tree-treenode.ant-tree-treenode-selected,
+body[data-theme='dark'] .redis-viewer-workbench .ant-tree .ant-tree-treenode.ant-tree-treenode-selected:hover {
+    background: linear-gradient(90deg, rgba(246, 196, 83, 0.22), rgba(246, 196, 83, 0.08)) !important;
+    border: 1px solid rgba(246, 196, 83, 0.24) !important;
+}
+
 body[data-theme='dark'] .ant-checkbox-checked .ant-checkbox-inner {
     background-color: #f6c453 !important;
     border-color: #f6c453 !important;
@@ -133,6 +228,41 @@ body[data-theme='dark'] .ant-table-tbody .ant-table-row.ant-table-row-selected >
 body[data-theme='dark'] .ant-table-tbody > tr.ant-table-row-selected:hover > td,
 body[data-theme='dark'] .ant-table-tbody .ant-table-row.ant-table-row-selected:hover > .ant-table-cell {
     background: rgba(246, 196, 83, 0.26) !important;
+}
+
+body[data-theme='dark'] .redis-viewer-workbench .ant-radio-button-wrapper {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+    color: rgba(230, 234, 242, 0.9);
+}
+
+body[data-theme='dark'] .redis-viewer-workbench .ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled) {
+    background: rgba(246, 196, 83, 0.16);
+    border-color: rgba(246, 196, 83, 0.3);
+    color: #f6c453;
+}
+
+body[data-theme='light'] .redis-viewer-workbench .ant-tree .ant-tree-treenode:hover {
+    background: rgba(15, 23, 42, 0.04) !important;
+}
+
+body[data-theme='light'] .redis-viewer-workbench .ant-tree .ant-tree-treenode.ant-tree-treenode-selected,
+body[data-theme='light'] .redis-viewer-workbench .ant-tree .ant-tree-treenode.ant-tree-treenode-selected:hover {
+    color: rgba(15, 23, 42, 0.92) !important;
+    background: linear-gradient(90deg, rgba(22, 119, 255, 0.12), rgba(22, 119, 255, 0.04)) !important;
+    border: 1px solid rgba(22, 119, 255, 0.18) !important;
+}
+
+body[data-theme='light'] .redis-viewer-workbench .ant-radio-button-wrapper {
+    background: rgba(255, 255, 255, 0.72);
+    border-color: rgba(15, 23, 42, 0.08);
+    color: rgba(51, 65, 85, 0.88);
+}
+
+body[data-theme='light'] .redis-viewer-workbench .ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled) {
+    background: rgba(22, 119, 255, 0.1);
+    border-color: rgba(22, 119, 255, 0.22);
+    color: #1677ff;
 }
 
 /* 连接配置弹窗：滚动仅在弹窗 body 内部，不使用外层 wrap 滚动条 */

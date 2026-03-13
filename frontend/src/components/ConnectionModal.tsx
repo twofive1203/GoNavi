@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Modal, Form, Input, InputNumber, Button, message, Checkbox, Divider, Select, Alert, Card, Row, Col, Typography, Collapse, Space, Table, Tag } from 'antd';
 import { DatabaseOutlined, ConsoleSqlOutlined, FileTextOutlined, CloudServerOutlined, AppstoreAddOutlined, CloudOutlined, CheckCircleFilled, CloseCircleFilled, LinkOutlined, EditOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
+import { buildOverlayWorkbenchTheme } from '../utils/overlayWorkbenchTheme';
 import { normalizeOpacityForPlatform, resolveAppearanceValues } from '../utils/appearance';
 import { DBGetDatabases, GetDriverStatusList, MongoDiscoverMembers, TestConnection, RedisConnect, SelectDatabaseFile, SelectSSHKeyFile } from '../../wailsjs/go/app/App';
 import { ConnectionConfig, MongoMemberInfo, SavedConnection } from '../types';
@@ -157,6 +158,7 @@ const ConnectionModal: React.FC<{
   const step1SidebarDividerColor = darkMode ? STEP1_SIDEBAR_DIVIDER_DARK : STEP1_SIDEBAR_DIVIDER_LIGHT;
   const step1SidebarActiveBg = darkMode ? 'rgba(246, 196, 83, 0.20)' : '#e6f4ff';
   const step1SidebarActiveColor = darkMode ? '#ffd666' : '#1677ff';
+  const overlayTheme = useMemo(() => buildOverlayWorkbenchTheme(darkMode), [darkMode]);
 
   const tunnelSectionStyle: React.CSSProperties = {
       padding: '12px',
@@ -168,35 +170,33 @@ const ConnectionModal: React.FC<{
 
 
   const modalShellStyle = useMemo(() => ({
-      background: darkMode
-          ? 'linear-gradient(180deg, rgba(20,26,38,0.96) 0%, rgba(13,17,26,0.98) 100%)'
-          : 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(246,248,252,0.98) 100%)',
-      border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(16,24,40,0.08)',
-      boxShadow: darkMode ? '0 24px 56px rgba(0,0,0,0.38)' : '0 18px 42px rgba(15,23,42,0.12)',
-      backdropFilter: darkMode ? 'blur(18px)' : 'none',
-  }), [darkMode]);
+      background: overlayTheme.shellBg,
+      border: overlayTheme.shellBorder,
+      boxShadow: overlayTheme.shellShadow,
+      backdropFilter: overlayTheme.shellBackdropFilter,
+  }), [overlayTheme]);
 
   const modalInnerSectionStyle = useMemo(() => ({
       padding: 14,
       borderRadius: 14,
-      border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(16,24,40,0.08)',
-      background: darkMode ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.84)',
-  }), [darkMode]);
+      border: overlayTheme.sectionBorder,
+      background: overlayTheme.sectionBg,
+  }), [overlayTheme]);
 
   const modalMutedTextStyle = useMemo(() => ({
-      color: darkMode ? 'rgba(255,255,255,0.5)' : 'rgba(16,24,40,0.55)',
+      color: overlayTheme.mutedText,
       fontSize: 12,
       lineHeight: 1.6,
-  }), [darkMode]);
+  }), [overlayTheme]);
 
   const renderConnectionModalTitle = (icon: React.ReactNode, title: string, description: string) => (
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 12, display: 'grid', placeItems: 'center', background: darkMode ? 'rgba(255,214,102,0.12)' : 'rgba(24,144,255,0.1)', color: darkMode ? '#ffd666' : '#1677ff', flexShrink: 0 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 12, display: 'grid', placeItems: 'center', background: overlayTheme.iconBg, color: overlayTheme.iconColor, flexShrink: 0 }}>
               {icon}
           </div>
           <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: darkMode ? '#f5f7ff' : '#162033' }}>{title}</div>
-              <div style={{ marginTop: 4, color: darkMode ? 'rgba(255,255,255,0.5)' : 'rgba(16,24,40,0.55)', fontSize: 12, lineHeight: 1.6 }}>{description}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: overlayTheme.titleText }}>{title}</div>
+              <div style={{ marginTop: 4, color: overlayTheme.mutedText, fontSize: 12, lineHeight: 1.6 }}>{description}</div>
           </div>
       </div>
   );

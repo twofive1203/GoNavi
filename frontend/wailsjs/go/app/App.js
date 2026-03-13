@@ -254,6 +254,10 @@ export function RedisGetValue(arg1, arg2) {
   return window['go']['app']['App']['RedisGetValue'](arg1, arg2);
 }
 
+export function RedisKeyExists(arg1, arg2) {
+  return window['go']['app']['App']['RedisKeyExists'](arg1, arg2);
+}
+
 export function RedisListPush(arg1, arg2, arg3) {
   return window['go']['app']['App']['RedisListPush'](arg1, arg2, arg3);
 }

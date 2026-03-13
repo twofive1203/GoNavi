@@ -1,16 +1,26 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Table, Input, Button, Space, Tag, Tree, Spin, message, Modal, Form, InputNumber, Popconfirm, Tooltip, Radio } from 'antd';
-import { ReloadOutlined, DeleteOutlined, PlusOutlined, EditOutlined, SearchOutlined, ClockCircleOutlined, CopyOutlined, FolderOpenOutlined, KeyOutlined } from '@ant-design/icons';
+import { ReloadOutlined, DeleteOutlined, PlusOutlined, EditOutlined, SearchOutlined, ClockCircleOutlined, CopyOutlined, FolderOpenOutlined, KeyOutlined, RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { RedisKeyInfo, RedisValue, StreamEntry } from '../types';
 import Editor from '@monaco-editor/react';
 import type { DataNode } from 'antd/es/tree';
-import { normalizeOpacityForPlatform, resolveAppearanceValues } from '../utils/appearance';
+import { blurToFilter, normalizeBlurForPlatform, normalizeOpacityForPlatform, resolveAppearanceValues } from '../utils/appearance';
+import {
+    applyRenamedRedisKeyState,
+    applyTreeNodeCheck,
+    buildLeafNodeKey,
+    buildCheckedTreeNodeState,
+    buildRedisKeyTree,
+    isGroupFullyChecked,
+    parseRawKeyFromNodeKey,
+    type RedisTreeDataNode,
+} from './redisViewerTree';
+import { buildRedisWorkbenchTheme } from './redisViewerWorkbenchTheme';
 
 const { Search } = Input;
 
-const KEY_GROUP_DELIMITER = ':';
-const EMPTY_SEGMENT_LABEL = '(empty)';
 const REDIS_TREE_KEY_TYPE_WIDTH = 92;
 const REDIS_TREE_KEY_TYPE_WIDTH_NARROW = 84;
 const REDIS_TREE_KEY_TTL_WIDTH = 92;
@@ -21,6 +31,7 @@ const REDIS_KEY_SEARCH_INITIAL_LOAD_COUNT = 600;
 const REDIS_KEY_SEARCH_LOAD_MORE_COUNT = 1000;
 const REDIS_LARGE_KEYSPACE_THRESHOLD = 10000;
 const REDIS_LARGE_KEYSPACE_MAX_EXPANDED_GROUPS = 200;
+const REDIS_KEY_GONE_MESSAGE = 'Redis Key 不存在或已过期';
 
 interface RedisViewerProps {
     connectionId: string;
@@ -234,45 +245,6 @@ const ResizableDivider: React.FC<{
     );
 };
 
-// 可拖拽列头组件 - 纯 DOM 操作实现
-type RedisKeyTreeLeaf = {
-    keyInfo: RedisKeyInfo;
-    label: string;
-};
-
-type RedisKeyTreeGroup = {
-    name: string;
-    path: string;
-    children: Map<string, RedisKeyTreeGroup>;
-    leaves: RedisKeyTreeLeaf[];
-    leafCount: number;
-};
-
-type RedisKeyTreeResult = {
-    treeData: RedisTreeDataNode[];
-    groupKeys: string[];
-};
-
-type RedisTreeDataNode = DataNode & {
-    nodeType: 'group' | 'leaf';
-    groupName?: string;
-    groupLeafCount?: number;
-    leafLabel?: string;
-    rawKey?: string;
-    keyType?: string;
-    ttl?: number;
-};
-
-const buildLeafNodeKey = (rawKey: string): string => `key:${rawKey}`;
-
-const parseRawKeyFromNodeKey = (nodeKey: React.Key): string | null => {
-    const keyText = String(nodeKey);
-    if (!keyText.startsWith('key:')) {
-        return null;
-    }
-    return keyText.slice(4);
-};
-
 const getRedisScanLoadCount = (pattern: string, append: boolean): number => {
     const normalizedPattern = pattern.trim() || '*';
     if (normalizedPattern === '*') {
@@ -298,100 +270,8 @@ const normalizeRedisCursor = (value: unknown): string => {
     return '0';
 };
 
-const normalizeKeySegment = (segment: string): string => {
-    return segment === '' ? EMPTY_SEGMENT_LABEL : segment;
-};
-
-const createTreeGroup = (name: string, path: string): RedisKeyTreeGroup => {
-    return { name, path, children: new Map(), leaves: [], leafCount: 0 };
-};
-
-const calculateGroupLeafCount = (group: RedisKeyTreeGroup): number => {
-    let count = group.leaves.length;
-    group.children.forEach((child) => {
-        count += calculateGroupLeafCount(child);
-    });
-    group.leafCount = count;
-    return count;
-};
-
-const buildRedisKeyTree = (
-    keys: RedisKeyInfo[],
-    sortLeafNodes: boolean
-): RedisKeyTreeResult => {
-    const root = createTreeGroup('__root__', '__root__');
-
-    keys.forEach((keyInfo) => {
-        const segments = keyInfo.key.split(KEY_GROUP_DELIMITER);
-        if (segments.length <= 1) {
-            root.leaves.push({ keyInfo, label: keyInfo.key });
-            return;
-        }
-
-        const groupSegments = segments.slice(0, -1);
-        const leafLabel = normalizeKeySegment(segments[segments.length - 1]);
-        let current = root;
-        const pathParts: string[] = [];
-
-        groupSegments.forEach((segment) => {
-            const normalized = normalizeKeySegment(segment);
-            pathParts.push(normalized);
-            const groupPath = pathParts.join(KEY_GROUP_DELIMITER);
-            let child = current.children.get(normalized);
-            if (!child) {
-                child = createTreeGroup(normalized, groupPath);
-                current.children.set(normalized, child);
-            }
-            current = child;
-        });
-
-        current.leaves.push({ keyInfo, label: leafLabel });
-    });
-    calculateGroupLeafCount(root);
-
-    const groupKeys: string[] = [];
-
-    const toTreeNodes = (group: RedisKeyTreeGroup): RedisTreeDataNode[] => {
-        const childGroups = Array.from(group.children.values()).sort((a, b) => a.name.localeCompare(b.name));
-        const childLeaves = sortLeafNodes
-            ? [...group.leaves].sort((a, b) => a.keyInfo.key.localeCompare(b.keyInfo.key))
-            : group.leaves;
-
-        const groupNodes: RedisTreeDataNode[] = childGroups.map((child) => {
-            const groupNodeKey = `group:${child.path}`;
-            groupKeys.push(groupNodeKey);
-            return {
-                key: groupNodeKey,
-                title: child.name,
-                nodeType: 'group',
-                groupName: child.name,
-                groupLeafCount: child.leafCount,
-                selectable: false,
-                disableCheckbox: true,
-                children: toTreeNodes(child),
-            };
-        });
-
-        const leafNodes: RedisTreeDataNode[] = childLeaves.map((leaf) => {
-            return {
-                key: buildLeafNodeKey(leaf.keyInfo.key),
-                isLeaf: true,
-                title: leaf.label,
-                nodeType: 'leaf',
-                leafLabel: leaf.label,
-                rawKey: leaf.keyInfo.key,
-                keyType: leaf.keyInfo.type,
-                ttl: leaf.keyInfo.ttl,
-            };
-        });
-
-        return [...groupNodes, ...leafNodes];
-    };
-
-    return {
-        treeData: toTreeNodes(root),
-        groupKeys,
-    };
+const isRedisKeyGoneErrorMessage = (messageText: string): boolean => {
+    return messageText.includes(REDIS_KEY_GONE_MESSAGE);
 };
 
 const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
@@ -401,16 +281,14 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
     const darkMode = theme === 'dark';
     const resolvedAppearance = resolveAppearanceValues(appearance);
     const opacity = normalizeOpacityForPlatform(resolvedAppearance.opacity);
+    const blur = normalizeBlurForPlatform(resolvedAppearance.blur);
     const connection = connections.find(c => c.id === connectionId);
-    const keyAccentColor = darkMode ? '#ffd666' : '#1677ff';
+    const workbenchTheme = useMemo(() => buildRedisWorkbenchTheme({ darkMode, opacity, blur }), [blur, darkMode, opacity]);
+    const keyAccentColor = workbenchTheme.accent;
     const jsonAccentColor = darkMode ? '#f6c453' : '#1890ff';
-    const valueToolbarBg = darkMode
-        ? `rgba(38, 38, 38, ${opacity})`
-        : `rgba(245, 245, 245, ${opacity})`;
-    const valueToolbarBorder = darkMode
-        ? `1px solid rgba(255, 255, 255, ${Math.max(0.12, Math.min(0.24, opacity * 0.22))})`
-        : `1px solid rgba(0, 0, 0, ${Math.max(0.08, Math.min(0.2, opacity * 0.12))})`;
-    const valueToolbarText = darkMode ? 'rgba(255, 255, 255, 0.78)' : '#666';
+    const valueToolbarBg = workbenchTheme.panelBgStrong;
+    const valueToolbarBorder = workbenchTheme.panelBorder;
+    const valueToolbarText = workbenchTheme.textMuted;
 
     const [keys, setKeys] = useState<RedisKeyInfo[]>([]);
     const [loading, setLoading] = useState(false);
@@ -423,10 +301,14 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
     const [editModalOpen, setEditModalOpen] = useState(false);
     const [newKeyModalOpen, setNewKeyModalOpen] = useState(false);
     const [newKeyForm] = Form.useForm();
+    const [renameKeyModalOpen, setRenameKeyModalOpen] = useState(false);
+    const [renameKeyForm] = Form.useForm();
+    const [renameTargetKey, setRenameTargetKey] = useState<string | null>(null);
     const [ttlModalOpen, setTtlModalOpen] = useState(false);
     const [ttlForm] = Form.useForm();
     const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
     const [editValue, setEditValue] = useState('');
+    const [treeContextMenu, setTreeContextMenu] = useState<{ x: number; y: number; rawKey: string } | null>(null);
 
     // 视图模式状态（用于所有数据类型）
     const [viewMode, setViewMode] = useState<'auto' | 'text' | 'utf8' | 'hex'>('auto');
@@ -449,6 +331,75 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
     const [showTreeKeyTTL, setShowTreeKeyTTL] = useState(true);
     const [treeHeight, setTreeHeight] = useState(500);
     const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
+
+    const workbenchCardStyle = useMemo(() => ({
+        background: workbenchTheme.panelBg,
+        border: workbenchTheme.panelBorder,
+        boxShadow: `${workbenchTheme.panelInset}, ${workbenchTheme.shadow}`,
+        borderRadius: 18,
+        backdropFilter: workbenchTheme.backdropFilter,
+        WebkitBackdropFilter: workbenchTheme.backdropFilter,
+    }), [workbenchTheme]);
+
+    const workbenchSubCardStyle = useMemo(() => ({
+        background: workbenchTheme.panelBgStrong,
+        border: workbenchTheme.panelBorder,
+        boxShadow: workbenchTheme.panelInset,
+        borderRadius: 16,
+        backdropFilter: workbenchTheme.backdropFilter,
+        WebkitBackdropFilter: workbenchTheme.backdropFilter,
+    }), [workbenchTheme]);
+
+    const actionButtonStyle = useMemo(() => ({
+        height: 36,
+        borderRadius: 12,
+        background: workbenchTheme.actionSecondaryBg,
+        borderColor: workbenchTheme.actionSecondaryBorder,
+        color: workbenchTheme.textPrimary,
+        fontWeight: 600,
+        boxShadow: 'none',
+    }), [workbenchTheme]);
+
+    const primaryActionButtonStyle = useMemo(() => ({
+        ...actionButtonStyle,
+        background: workbenchTheme.toolbarPrimaryBg,
+        borderColor: workbenchTheme.accentBorder,
+        color: workbenchTheme.accent,
+    }), [actionButtonStyle, workbenchTheme]);
+
+    const dangerActionButtonStyle = useMemo(() => ({
+        ...actionButtonStyle,
+        background: workbenchTheme.actionDangerBg,
+        borderColor: workbenchTheme.actionDangerBorder,
+        color: workbenchTheme.actionDangerText,
+    }), [actionButtonStyle, workbenchTheme]);
+
+    const pillTagStyle = useMemo(() => ({
+        margin: 0,
+        borderRadius: 999,
+        borderColor: workbenchTheme.statusTagBorder,
+        background: workbenchTheme.statusTagBg,
+        color: workbenchTheme.isDark ? '#9bc2ff' : '#165dca',
+        fontWeight: 600,
+        paddingInline: 10,
+    }), [workbenchTheme]);
+
+    const mutedPillTagStyle = useMemo(() => ({
+        margin: 0,
+        borderRadius: 999,
+        borderColor: workbenchTheme.statusTagMutedBorder,
+        background: workbenchTheme.statusTagMutedBg,
+        color: workbenchTheme.textSecondary,
+        fontWeight: 500,
+        paddingInline: 10,
+    }), [workbenchTheme]);
+    const redisModalContentStyle = useMemo(() => ({
+        background: workbenchTheme.panelBgStrong,
+        border: workbenchTheme.panelBorder,
+        boxShadow: `${workbenchTheme.panelInset}, ${workbenchTheme.shadow}`,
+        backdropFilter: workbenchTheme.backdropFilter,
+        WebkitBackdropFilter: workbenchTheme.backdropFilter,
+    }), [workbenchTheme]);
 
     const getConfig = useCallback(() => {
         if (!connection) return null;
@@ -536,6 +487,21 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
         loadKeys(searchPattern, '0', false, getRedisScanLoadCount(searchPattern, false));
     };
 
+    const handleSelectAllLoadedKeys = useCallback(() => {
+        setSelectedKeys(keys.map((item) => item.key));
+    }, [keys]);
+
+    const handleClearAllSelectedKeys = useCallback(() => {
+        setSelectedKeys([]);
+    }, []);
+
+    const removeMissingKeyFromView = useCallback((missingKey: string) => {
+        setKeys(prev => prev.filter(item => item.key !== missingKey));
+        setSelectedKeys(prev => prev.filter(item => item !== missingKey));
+        setSelectedKey(null);
+        setKeyValue(null);
+    }, []);
+
     const loadKeyValue = async (key: string) => {
         const config = getConfig();
         if (!config) return;
@@ -547,10 +513,22 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                 setKeyValue(res.data);
                 setSelectedKey(key);
             } else {
-                message.error('获取值失败: ' + res.message);
+                const messageText = String(res.message || '');
+                if (isRedisKeyGoneErrorMessage(messageText)) {
+                    removeMissingKeyFromView(key);
+                    message.warning('Key 已不存在或已过期，已从列表移除');
+                } else {
+                    message.error('获取值失败: ' + messageText);
+                }
             }
         } catch (e: any) {
-            message.error('获取值失败: ' + (e?.message || String(e)));
+            const messageText = e?.message || String(e);
+            if (isRedisKeyGoneErrorMessage(messageText)) {
+                removeMissingKeyFromView(key);
+                message.warning('Key 已不存在或已过期，已从列表移除');
+            } else {
+                message.error('获取值失败: ' + messageText);
+            }
         } finally {
             setValueLoading(false);
         }
@@ -638,6 +616,69 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
             }
         } catch (e: any) {
             message.error('创建失败: ' + (e?.message || String(e)));
+        }
+    };
+
+    const openRenameKeyModal = useCallback((rawKey: string) => {
+        setTreeContextMenu(null);
+        setRenameTargetKey(rawKey);
+        renameKeyForm.setFieldsValue({ key: rawKey });
+        setRenameKeyModalOpen(true);
+    }, [renameKeyForm]);
+
+    const handleRenameKey = async () => {
+        const config = getConfig();
+        if (!config || !renameTargetKey) return;
+
+        try {
+            const values = await renameKeyForm.validateFields();
+            const nextKey = String(values.key || '').trim();
+            if (!nextKey) {
+                message.warning('请输入新的 Key 名称');
+                return;
+            }
+            if (nextKey === renameTargetKey) {
+                message.warning('新的 Key 名称不能与原值相同');
+                return;
+            }
+
+            const existsRes = await (window as any).go.app.App.RedisKeyExists(config, nextKey);
+            if (!existsRes?.success) {
+                message.error('校验目标 Key 失败: ' + (existsRes?.message || '未知错误'));
+                return;
+            }
+            if (existsRes?.data?.exists) {
+                message.error(`目标 Key 已存在: ${nextKey}`);
+                return;
+            }
+
+            const res = await (window as any).go.app.App.RedisRenameKey(config, renameTargetKey, nextKey);
+            if (res.success) {
+                const nextState = applyRenamedRedisKeyState(
+                    {
+                        keys,
+                        selectedKey,
+                        selectedKeys,
+                    },
+                    renameTargetKey,
+                    nextKey
+                );
+                setKeys(nextState.keys);
+                setSelectedKey(nextState.selectedKey);
+                setSelectedKeys(Array.from(new Set(nextState.selectedKeys)));
+                setRenameKeyModalOpen(false);
+                setRenameTargetKey(null);
+                renameKeyForm.resetFields();
+                message.success('Key 重命名成功');
+                if (selectedKey === renameTargetKey) {
+                    void loadKeyValue(nextKey);
+                }
+                handleRefresh();
+            } else {
+                message.error('重命名失败: ' + res.message);
+            }
+        } catch (e: any) {
+            message.error('重命名失败: ' + (e?.message || String(e)));
         }
     };
 
@@ -732,8 +773,8 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
     }, [selectedKey]);
 
     const checkedTreeNodeKeys = useMemo(() => {
-        return selectedKeys.map(rawKey => buildLeafNodeKey(rawKey));
-    }, [selectedKeys]);
+        return buildCheckedTreeNodeState(selectedKeys, keyTree);
+    }, [keyTree, selectedKeys]);
 
     useEffect(() => {
         const existingKeySet = new Set(keys.map(item => item.key));
@@ -750,6 +791,21 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
         });
     }, [groupKeySet, isLargeKeyspace]);
 
+    useEffect(() => {
+        if (!treeContextMenu) {
+            return;
+        }
+        const handleDismiss = () => setTreeContextMenu(null);
+        window.addEventListener('click', handleDismiss);
+        window.addEventListener('scroll', handleDismiss, true);
+        window.addEventListener('contextmenu', handleDismiss);
+        return () => {
+            window.removeEventListener('click', handleDismiss);
+            window.removeEventListener('scroll', handleDismiss, true);
+            window.removeEventListener('contextmenu', handleDismiss);
+        };
+    }, [treeContextMenu]);
+
     const handleTreeSelect = (nodeKeys: React.Key[]) => {
         if (nodeKeys.length === 0) {
             return;
@@ -761,24 +817,127 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
         loadKeyValue(rawKey);
     };
 
-    const handleTreeCheck = (checked: React.Key[] | { checked: React.Key[]; halfChecked: React.Key[] }) => {
-        const checkedNodeKeys = Array.isArray(checked) ? checked : checked.checked;
-        const rawKeys = checkedNodeKeys
-            .map(nodeKey => parseRawKeyFromNodeKey(nodeKey))
-            .filter((rawKey): rawKey is string => Boolean(rawKey));
-        setSelectedKeys(rawKeys);
+    const handleTreeCheck = (
+        _checked: React.Key[] | { checked: React.Key[]; halfChecked: React.Key[] },
+        info: { checked: boolean; node: DataNode }
+    ) => {
+        const node = info.node as RedisTreeDataNode;
+        setSelectedKeys((prev) => applyTreeNodeCheck(prev, node, info.checked));
+    };
+
+    const handleTreeRightClick = ({ event, node }: { event: React.MouseEvent; node: DataNode }) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const treeNode = node as RedisTreeDataNode;
+        if (treeNode.nodeType !== 'leaf' || !treeNode.rawKey) {
+            setTreeContextMenu(null);
+            return;
+        }
+
+        setTreeContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            rawKey: treeNode.rawKey,
+        });
+    };
+
+    const handleSelectGroupDescendants = useCallback((treeNode: RedisTreeDataNode) => {
+        setSelectedKeys((prev) => applyTreeNodeCheck(prev, treeNode, !isGroupFullyChecked(treeNode, prev)));
+    }, []);
+
+    const handleToggleGroupExpand = useCallback((groupNodeKey: string) => {
+        setExpandedGroupKeys((prev) => {
+            const exists = prev.includes(groupNodeKey);
+            const nextKeys = exists
+                ? prev.filter((nodeKey) => nodeKey !== groupNodeKey)
+                : [...prev, groupNodeKey];
+
+            if (isLargeKeyspace) {
+                return nextKeys.slice(-REDIS_LARGE_KEYSPACE_MAX_EXPANDED_GROUPS);
+            }
+
+            return nextKeys;
+        });
+    }, [isLargeKeyspace]);
+
+    const stopTreeTitleEvent = (event: React.MouseEvent<HTMLElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
     };
 
     const renderTreeNodeTitle = useCallback((nodeData: DataNode) => {
         const treeNode = nodeData as RedisTreeDataNode;
 
         if (treeNode.nodeType === 'group') {
+            const groupFullyChecked = isGroupFullyChecked(treeNode, selectedKeys);
+            const groupNodeKey = String(treeNode.key ?? '');
+            const isExpanded = expandedGroupKeys.includes(groupNodeKey);
             return (
-                <Space size={6}>
-                    <FolderOpenOutlined style={{ color: '#8c8c8c' }} />
-                    <span>{treeNode.groupName}</span>
-                    <span style={{ fontSize: 12, color: '#999' }}>({treeNode.groupLeafCount ?? 0})</span>
-                </Space>
+                <div
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        width: '100%',
+                        minWidth: 0,
+                        padding: '2px 0',
+                    }}
+                >
+                    <Space size={6} style={{ minWidth: 0, overflow: 'hidden' }}>
+                        <button
+                            type="button"
+                            className="redis-tree-expander-button"
+                            aria-label={isExpanded ? '折叠分组' : '展开分组'}
+                            onMouseDown={stopTreeTitleEvent}
+                            onClick={(event) => {
+                                stopTreeTitleEvent(event);
+                                handleToggleGroupExpand(groupNodeKey);
+                            }}
+                            style={{
+                                width: 18,
+                                height: 18,
+                                padding: 0,
+                                border: 'none',
+                                background: 'transparent',
+                                color: workbenchTheme.textMuted,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                flexShrink: 0,
+                            }}
+                        >
+                            {isExpanded ? <DownOutlined style={{ fontSize: 11 }} /> : <RightOutlined style={{ fontSize: 11 }} />}
+                        </button>
+                        <FolderOpenOutlined style={{ color: workbenchTheme.textMuted }} />
+                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {treeNode.groupName}
+                        </span>
+                        <span style={{ fontSize: 12, color: workbenchTheme.textMuted, flexShrink: 0 }}>({treeNode.groupLeafCount ?? 0})</span>
+                    </Space>
+                    <Button
+                        size="small"
+                        style={{
+                            paddingInline: 10,
+                            height: 26,
+                            borderRadius: 999,
+                            flexShrink: 0,
+                            borderColor: workbenchTheme.accentBorder,
+                            background: workbenchTheme.accentSoft,
+                            color: workbenchTheme.accent,
+                            fontWeight: 600,
+                        }}
+                        onMouseDown={stopTreeTitleEvent}
+                        onClick={(event) => {
+                            stopTreeTitleEvent(event);
+                            handleSelectGroupDescendants(treeNode);
+                        }}
+                    >
+                        {groupFullyChecked ? '取消全选' : '全选'}
+                    </Button>
+                </div>
             );
         }
 
@@ -789,11 +948,11 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
 
         if (isLargeKeyspace) {
             return (
-                <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: workbenchTheme.textPrimary }}>
                     <span>{leafLabel}</span>
-                    <span style={{ marginLeft: 8, color: '#999', fontSize: 12 }}>[{keyType}]</span>
+                    <span style={{ marginLeft: 8, color: workbenchTheme.textMuted, fontSize: 12 }}>[{keyType}]</span>
                     {showTreeKeyTTL && (
-                        <span style={{ marginLeft: 8, color: '#999', fontSize: 12 }}>{formatTTL(ttl)}</span>
+                        <span style={{ marginLeft: 8, color: workbenchTheme.textMuted, fontSize: 12 }}>{formatTTL(ttl)}</span>
                     )}
                 </div>
             );
@@ -841,7 +1000,9 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                         marginInlineEnd: 0,
                         width: showTreeKeyTTL ? REDIS_TREE_KEY_TYPE_WIDTH : REDIS_TREE_KEY_TYPE_WIDTH_NARROW,
                         textAlign: 'center',
-                        flexShrink: 0
+                        flexShrink: 0,
+                        borderRadius: 999,
+                        fontWeight: 600,
                     }}
                 >
                     {keyType}
@@ -851,7 +1012,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                         style={{
                             width: REDIS_TREE_KEY_TTL_WIDTH,
                             fontSize: 12,
-                            color: '#999',
+                            color: workbenchTheme.textMuted,
                             textAlign: 'left',
                             whiteSpace: 'nowrap',
                             flexShrink: 0,
@@ -864,7 +1025,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                 )}
             </div>
         );
-    }, [formatTTL, getTypeColor, isLargeKeyspace, showTreeKeyTTL]);
+    }, [expandedGroupKeys, formatTTL, getTypeColor, handleSelectGroupDescendants, handleToggleGroupExpand, isLargeKeyspace, keyAccentColor, selectedKeys, showTreeKeyTTL, workbenchTheme]);
 
     const handleTreeExpand = (nextExpandedKeys: React.Key[]) => {
         const validGroupKeys = nextExpandedKeys
@@ -879,7 +1040,22 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
 
     const renderValueEditor = () => {
         if (!keyValue || !selectedKey) {
-            return <div style={{ padding: 20, textAlign: 'center', color: '#999' }}>选择一个 Key 查看详情</div>;
+            return (
+                <div
+                    style={{
+                        ...workbenchCardStyle,
+                        height: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: workbenchTheme.contentEmptyBg,
+                        color: workbenchTheme.textMuted,
+                        padding: 24,
+                    }}
+                >
+                    选择一个 Key 查看详情
+                </div>
+            );
         }
 
         const renderStringValue = () => {
@@ -919,18 +1095,11 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                         background: valueToolbarBg,
                         borderBottom: valueToolbarBorder,
                         display: 'flex',
-                        justifyContent: 'space-between',
                         alignItems: 'center'
                     }}>
                         <span style={{ fontSize: 12, color: valueToolbarText }}>
                             {encoding && `编码: ${encoding}`}
                         </span>
-                        <Radio.Group size="small" value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
-                            <Radio.Button value="auto">自动</Radio.Button>
-                            <Radio.Button value="text">原始文本</Radio.Button>
-                            <Radio.Button value="utf8">UTF-8</Radio.Button>
-                            <Radio.Button value="hex">十六进制</Radio.Button>
-                        </Radio.Group>
                     </div>
                     <Editor
                         height="calc(100% - 72px)"
@@ -1039,7 +1208,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
             return (
                 <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                     <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Button size="small" icon={<PlusOutlined />} onClick={() => {
+                        <Button size="small" style={actionButtonStyle} icon={<PlusOutlined />} onClick={() => {
                             Modal.confirm({
                                 title: '添加字段',
                                 content: (
@@ -1061,12 +1230,6 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                                 }
                             });
                         }}>添加字段</Button>
-                        <Radio.Group size="small" value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
-                            <Radio.Button value="auto">自动</Radio.Button>
-                            <Radio.Button value="text">原始文本</Radio.Button>
-                            <Radio.Button value="utf8">UTF-8</Radio.Button>
-                            <Radio.Button value="hex">十六进制</Radio.Button>
-                        </Radio.Group>
                     </div>
                     <Table
                         dataSource={data}
@@ -1207,7 +1370,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                 <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                     <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <Space>
-                            <Button size="small" icon={<PlusOutlined />} onClick={() => {
+                            <Button size="small" style={actionButtonStyle} icon={<PlusOutlined />} onClick={() => {
                                 Modal.confirm({
                                     title: '添加元素',
                                     content: (
@@ -1223,7 +1386,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                                     }
                                 });
                             }}>添加到尾部</Button>
-                            <Button size="small" onClick={() => {
+                            <Button size="small" style={actionButtonStyle} onClick={() => {
                                 Modal.confirm({
                                     title: '添加元素到头部',
                                     content: (
@@ -1240,12 +1403,6 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                                 });
                             }}>添加到头部</Button>
                         </Space>
-                        <Radio.Group size="small" value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
-                            <Radio.Button value="auto">自动</Radio.Button>
-                            <Radio.Button value="text">原始文本</Radio.Button>
-                            <Radio.Button value="utf8">UTF-8</Radio.Button>
-                            <Radio.Button value="hex">十六进制</Radio.Button>
-                        </Radio.Group>
                     </div>
                     <Table
                         dataSource={data}
@@ -1382,7 +1539,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
             return (
                 <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                     <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Button size="small" icon={<PlusOutlined />} onClick={() => {
+                        <Button size="small" style={actionButtonStyle} icon={<PlusOutlined />} onClick={() => {
                             Modal.confirm({
                                 title: '添加成员',
                                 content: (
@@ -1396,12 +1553,6 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                                 }
                             });
                         }}>添加成员</Button>
-                        <Radio.Group size="small" value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
-                            <Radio.Button value="auto">自动</Radio.Button>
-                            <Radio.Button value="text">原始文本</Radio.Button>
-                            <Radio.Button value="utf8">UTF-8</Radio.Button>
-                            <Radio.Button value="hex">十六进制</Radio.Button>
-                        </Radio.Group>
                     </div>
                     <Table
                         dataSource={data}
@@ -1525,7 +1676,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
             return (
                 <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                     <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Button size="small" icon={<PlusOutlined />} onClick={() => {
+                        <Button size="small" style={actionButtonStyle} icon={<PlusOutlined />} onClick={() => {
                             Modal.confirm({
                                 title: '添加成员',
                                 content: (
@@ -1549,12 +1700,6 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                                 }
                             });
                         }}>添加成员</Button>
-                        <Radio.Group size="small" value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
-                            <Radio.Button value="auto">自动</Radio.Button>
-                            <Radio.Button value="text">原始文本</Radio.Button>
-                            <Radio.Button value="utf8">UTF-8</Radio.Button>
-                            <Radio.Button value="hex">十六进制</Radio.Button>
-                        </Radio.Group>
                     </div>
                     <Table
                         dataSource={data}
@@ -1734,7 +1879,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
             return (
                 <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                     <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Button size="small" icon={<PlusOutlined />} onClick={() => {
+                        <Button size="small" style={actionButtonStyle} icon={<PlusOutlined />} onClick={() => {
                             Modal.confirm({
                                 title: '添加 Stream 消息',
                                 width: 680,
@@ -1757,12 +1902,6 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                                 }
                             });
                         }}>添加消息</Button>
-                        <Radio.Group size="small" value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
-                            <Radio.Button value="auto">自动</Radio.Button>
-                            <Radio.Button value="text">原始文本</Radio.Button>
-                            <Radio.Button value="utf8">UTF-8</Radio.Button>
-                            <Radio.Button value="hex">十六进制</Radio.Button>
-                        </Radio.Group>
                     </div>
                     <Table
                         dataSource={data}
@@ -1839,49 +1978,67 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
         };
 
         return (
-            <div style={{ padding: 12, height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <Tooltip title={selectedKey}>
-                            <strong style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedKey}</strong>
-                        </Tooltip>
-                        <Tooltip title="复制 Key 名称">
-                            <Button
-                                type="text"
-                                size="small"
-                                icon={<CopyOutlined />}
-                                style={{ padding: '0 4px', display: 'flex', alignItems: 'center' }}
-                                onClick={() => {
-                                    navigator.clipboard.writeText(selectedKey).then(() => {
-                                        message.success('已复制 Key 名称');
-                                    }).catch(() => {
-                                        message.error('复制失败');
-                                    });
-                                }}
-                            />
-                        </Tooltip>
-                        <Tag color={getTypeColor(keyValue.type)} style={{ margin: 0 }}>{keyValue.type}</Tag>
-                        <Tag icon={<ClockCircleOutlined />} style={{ margin: 0 }}>{formatTTL(keyValue.ttl)}</Tag>
-                        {keyValue.length > 0 && <Tag style={{ margin: 0 }}>长度: {keyValue.length}</Tag>}
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ ...workbenchCardStyle, padding: 18, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexShrink: 0 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+                        <span style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.08em', color: workbenchTheme.textMuted, fontWeight: 600 }}>
+                            Active Key
+                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+                            <Tooltip title={selectedKey}>
+                                <strong style={{ maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 26, color: workbenchTheme.textPrimary }}>
+                                    {selectedKey}
+                                </strong>
+                            </Tooltip>
+                            <Tooltip title="复制 Key 名称">
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<CopyOutlined />}
+                                    style={{ padding: '0 4px', display: 'flex', alignItems: 'center', color: workbenchTheme.textMuted }}
+                                    onClick={() => {
+                                        navigator.clipboard.writeText(selectedKey).then(() => {
+                                            message.success('已复制 Key 名称');
+                                        }).catch(() => {
+                                            message.error('复制失败');
+                                        });
+                                    }}
+                                />
+                            </Tooltip>
+                            <Tag color={getTypeColor(keyValue.type)} style={pillTagStyle}>{keyValue.type}</Tag>
+                            <Tag icon={<ClockCircleOutlined />} style={mutedPillTagStyle}>{formatTTL(keyValue.ttl)}</Tag>
+                            {keyValue.length > 0 && <Tag style={mutedPillTagStyle}>长度: {keyValue.length}</Tag>}
+                        </div>
                     </div>
-                    <Space>
-                        <Button size="small" onClick={() => {
+                    <div style={{ ...workbenchSubCardStyle, padding: 4, display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        <Button size="small" style={actionButtonStyle} onClick={() => {
                             ttlForm.setFieldsValue({ ttl: keyValue.ttl > 0 ? keyValue.ttl : -1 });
                             setTtlModalOpen(true);
                         }}>设置 TTL</Button>
-                        <Button size="small" onClick={() => loadKeyValue(selectedKey)} icon={<ReloadOutlined />}>刷新</Button>
+                        <Button size="small" style={actionButtonStyle} onClick={() => loadKeyValue(selectedKey)} icon={<ReloadOutlined />}>刷新</Button>
                         <Popconfirm title={`确定删除 Key "${selectedKey}"？`} onConfirm={handleDeleteCurrentKey}>
-                            <Button size="small" danger icon={<DeleteOutlined />}>删除 Key</Button>
+                            <Button size="small" style={dangerActionButtonStyle} icon={<DeleteOutlined />}>删除 Key</Button>
                         </Popconfirm>
-                    </Space>
+                    </div>
                 </div>
-                <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-                    {keyValue.type === 'string' && renderStringValue()}
-                    {keyValue.type === 'hash' && renderHashValue()}
-                    {keyValue.type === 'list' && renderListValue()}
-                    {keyValue.type === 'set' && renderSetValue()}
-                    {keyValue.type === 'zset' && renderZSetValue()}
-                    {keyValue.type === 'stream' && renderStreamValue()}
+                <div style={{ ...workbenchSubCardStyle, padding: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                    <span style={{ paddingInline: 10, fontSize: 12, color: workbenchTheme.textMuted }}>查看模式</span>
+                    <Radio.Group size="small" value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
+                        <Radio.Button value="auto">自动</Radio.Button>
+                        <Radio.Button value="text">原始文本</Radio.Button>
+                        <Radio.Button value="utf8">UTF-8</Radio.Button>
+                        <Radio.Button value="hex">十六进制</Radio.Button>
+                    </Radio.Group>
+                </div>
+                <div style={{ ...workbenchCardStyle, padding: 14, flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                    <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', height: '100%' }}>
+                        {keyValue.type === 'string' && renderStringValue()}
+                        {keyValue.type === 'hash' && renderHashValue()}
+                        {keyValue.type === 'list' && renderListValue()}
+                        {keyValue.type === 'set' && renderSetValue()}
+                        {keyValue.type === 'zset' && renderZSetValue()}
+                        {keyValue.type === 'stream' && renderStreamValue()}
+                    </div>
                 </div>
             </div>
         );
@@ -1892,10 +2049,17 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
     }
 
     return (
-        <div style={{ display: 'flex', height: '100%' }}>
+        <div className="redis-viewer-workbench" style={{ display: 'flex', height: '100%', gap: 12, padding: 12, background: workbenchTheme.appBg, backdropFilter: blurToFilter(blur), WebkitBackdropFilter: blurToFilter(blur) }}>
             {/* Left: Key List */}
-            <div ref={leftPanelRef} style={{ width: leftPanelWidth, minWidth: 300, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-                <div style={{ padding: 8, borderBottom: '1px solid #f0f0f0' }}>
+            <div ref={leftPanelRef} style={{ width: leftPanelWidth, minWidth: 300, display: 'flex', flexDirection: 'column', flexShrink: 0, gap: 12 }}>
+                <div style={{ ...workbenchCardStyle, padding: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
+                        <div>
+                            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.08em', color: workbenchTheme.textMuted, fontWeight: 600 }}>Key Explorer</div>
+                            <div style={{ fontSize: 24, fontWeight: 700, color: workbenchTheme.textPrimary, marginTop: 4 }}>db{redisDB}</div>
+                        </div>
+                        <Tag style={mutedPillTagStyle}>{keys.length} Keys</Tag>
+                    </div>
                     <Space.Compact style={{ width: '100%' }}>
                         <Search
                             placeholder="搜索 Key (支持 * 通配符)"
@@ -1904,33 +2068,40 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                             enterButton={<SearchOutlined />}
                         />
                     </Space.Compact>
-                    <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between' }}>
-                        <Space>
-                            <Button size="small" icon={<ReloadOutlined />} onClick={handleRefresh}>刷新</Button>
-                            <Button size="small" icon={<PlusOutlined />} onClick={() => setNewKeyModalOpen(true)}>新建</Button>
+                    <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                        <Space wrap size={8}>
+                            <Button size="small" style={actionButtonStyle} icon={<ReloadOutlined />} onClick={handleRefresh}>刷新</Button>
+                            <Button size="small" style={actionButtonStyle} icon={<PlusOutlined />} onClick={() => setNewKeyModalOpen(true)}>新建</Button>
+                            <Button size="small" style={primaryActionButtonStyle} onClick={handleSelectAllLoadedKeys} disabled={keys.length === 0}>全选全部</Button>
+                            <Button size="small" style={actionButtonStyle} onClick={handleClearAllSelectedKeys} disabled={selectedKeys.length === 0}>取消全选</Button>
                         </Space>
                         <Popconfirm
                             title={`确定删除选中的 ${selectedKeys.length} 个 Key？`}
                             onConfirm={() => handleDeleteKeys(selectedKeys)}
                             disabled={selectedKeys.length === 0}
                         >
-                            <Button size="small" danger icon={<DeleteOutlined />} disabled={selectedKeys.length === 0}>
+                            <Button size="small" style={dangerActionButtonStyle} icon={<DeleteOutlined />} disabled={selectedKeys.length === 0}>
                                 删除选中({selectedKeys.length})
                             </Button>
                         </Popconfirm>
                     </div>
                 </div>
-                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <div style={{ ...workbenchCardStyle, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: 10 }}>
                     {isLargeKeyspace && (
-                        <div style={{ padding: '6px 8px', fontSize: 12, color: '#8c8c8c', borderBottom: '1px solid #f0f0f0' }}>
+                        <div style={{ padding: '8px 10px', fontSize: 12, color: workbenchTheme.textMuted, marginBottom: 8, borderRadius: 12, background: workbenchTheme.panelBgSubtle, border: workbenchTheme.panelBorder }}>
                             已启用大数据量性能模式（简化节点渲染，最多保留 {REDIS_LARGE_KEYSPACE_MAX_EXPANDED_GROUPS} 个展开分组）
                         </div>
                     )}
-                    <div ref={treeContainerRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 8px 10px 8px', color: workbenchTheme.textMuted, fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+                        <span>命名空间 / Key</span>
+                        <span>类型 / TTL</span>
+                    </div>
+                    <div ref={treeContainerRef} style={{ ...workbenchSubCardStyle, flex: 1, minHeight: 0, overflow: 'hidden', padding: 6 }}>
                         <Spin spinning={loading} size="small" style={{ width: '100%' }}>
                             <Tree
                                 blockNode
                                 showIcon={false}
+                                switcherIcon={() => null}
                                 checkable
                                 checkStrictly
                                 selectable
@@ -1943,14 +2114,15 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                                 expandedKeys={expandedGroupKeys}
                                 onExpand={handleTreeExpand}
                                 onSelect={(nodeKeys) => handleTreeSelect(nodeKeys)}
-                                onCheck={(checked) => handleTreeCheck(checked)}
+                                onCheck={(checked, info) => handleTreeCheck(checked, info)}
+                                onRightClick={handleTreeRightClick}
                                 style={{ padding: '8px 6px' }}
                             />
                         </Spin>
                     </div>
                     {hasMore && (
-                        <div style={{ padding: 8, textAlign: 'center' }}>
-                            <Button onClick={handleLoadMore} loading={loading} disabled={!hasMore || loading}>加载更多</Button>
+                        <div style={{ padding: 10, textAlign: 'center' }}>
+                            <Button style={actionButtonStyle} onClick={handleLoadMore} loading={loading} disabled={!hasMore || loading}>加载更多</Button>
                         </div>
                     )}
                 </div>
@@ -1962,7 +2134,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
             {/* Right: Value Viewer */}
             <div style={{ flex: 1, overflow: 'hidden', minWidth: 300 }}>
                 {valueLoading ? (
-                    <div style={{ padding: 20, textAlign: 'center' }}>加载中...</div>
+                    <div style={{ ...workbenchCardStyle, padding: 20, textAlign: 'center', color: workbenchTheme.textMuted }}>加载中...</div>
                 ) : (
                     renderValueEditor()
                 )}
@@ -1975,7 +2147,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                 onOk={handleSaveString}
                 onCancel={() => setEditModalOpen(false)}
                 width={800}
-                styles={{ body: { height: 500 } }}
+                styles={{ content: redisModalContentStyle, header: { background: 'transparent', borderBottom: 'none', color: workbenchTheme.textPrimary }, body: { height: 500, paddingTop: 8 }, footer: { background: 'transparent', borderTop: 'none' } }}
             >
                 <Editor
                     height="450px"
@@ -2000,6 +2172,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                 open={newKeyModalOpen}
                 onOk={handleCreateKey}
                 onCancel={() => setNewKeyModalOpen(false)}
+                styles={{ content: redisModalContentStyle, header: { background: 'transparent', borderBottom: 'none', color: workbenchTheme.textPrimary }, body: { paddingTop: 8 }, footer: { background: 'transparent', borderTop: 'none' } }}
             >
                 <Form form={newKeyForm} layout="vertical" initialValues={{ ttl: -1 }}>
                     <Form.Item name="key" label="Key" rules={[{ required: true, message: '请输入 Key' }]}>
@@ -2016,10 +2189,34 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
 
             {/* TTL Modal */}
             <Modal
+                title="重命名 Key"
+                open={renameKeyModalOpen}
+                onOk={handleRenameKey}
+                onCancel={() => {
+                    setRenameKeyModalOpen(false);
+                    setRenameTargetKey(null);
+                    renameKeyForm.resetFields();
+                }}
+                styles={{ content: redisModalContentStyle, header: { background: 'transparent', borderBottom: 'none', color: workbenchTheme.textPrimary }, body: { paddingTop: 8 }, footer: { background: 'transparent', borderTop: 'none' } }}
+            >
+                <Form form={renameKeyForm} layout="vertical">
+                    <Form.Item
+                        name="key"
+                        label="新的 Key 名称"
+                        rules={[{ required: true, message: '请输入新的 Key 名称' }]}
+                        extra={renameTargetKey ? `原始 Key：${renameTargetKey}` : undefined}
+                    >
+                        <Input placeholder="new:key:name" />
+                    </Form.Item>
+                </Form>
+            </Modal>
+
+            <Modal
                 title="设置 TTL"
                 open={ttlModalOpen}
                 onOk={handleSetTTL}
                 onCancel={() => setTtlModalOpen(false)}
+                styles={{ content: redisModalContentStyle, header: { background: 'transparent', borderBottom: 'none', color: workbenchTheme.textPrimary }, body: { paddingTop: 8 }, footer: { background: 'transparent', borderTop: 'none' } }}
             >
                 <Form form={ttlForm} layout="vertical">
                     <Form.Item name="ttl" label="TTL (秒)" help="-1 表示永不过期">
@@ -2040,7 +2237,7 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                 }}
                 onCancel={() => setJsonEditModalOpen(false)}
                 width={800}
-                styles={{ body: { height: 500 } }}
+                styles={{ content: redisModalContentStyle, header: { background: 'transparent', borderBottom: 'none', color: workbenchTheme.textPrimary }, body: { height: 500, paddingTop: 8 }, footer: { background: 'transparent', borderTop: 'none' } }}
             >
                 <Editor
                     height="450px"
@@ -2060,6 +2257,50 @@ const RedisViewer: React.FC<RedisViewerProps> = ({ connectionId, redisDB }) => {
                     }}
                 />
             </Modal>
+            {treeContextMenu && typeof document !== 'undefined' && createPortal((
+                <div
+                    style={{
+                        position: 'fixed',
+                        left: typeof window !== 'undefined' ? Math.min(treeContextMenu.x + 4, Math.max(16, window.innerWidth - 220)) : treeContextMenu.x,
+                        top: typeof window !== 'undefined' ? Math.min(treeContextMenu.y + 4, Math.max(16, window.innerHeight - 140)) : treeContextMenu.y,
+                        zIndex: 1200,
+                        minWidth: 188,
+                        padding: 8,
+                        borderRadius: 14,
+                        background: workbenchTheme.panelBgStrong,
+                        border: workbenchTheme.panelBorder,
+                        boxShadow: `${workbenchTheme.panelInset}, ${workbenchTheme.shadow}`,
+                        backdropFilter: workbenchTheme.backdropFilter,
+                        WebkitBackdropFilter: workbenchTheme.backdropFilter,
+                    }}
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <Button
+                        type="text"
+                        style={{ width: '100%', justifyContent: 'flex-start', height: 40, borderRadius: 10, color: workbenchTheme.textPrimary, fontWeight: 600 }}
+                        icon={<EditOutlined />}
+                        onClick={() => openRenameKeyModal(treeContextMenu.rawKey)}
+                    >
+                        重命名 Key
+                    </Button>
+                    <Button
+                        type="text"
+                        style={{ width: '100%', justifyContent: 'flex-start', height: 40, borderRadius: 10, color: workbenchTheme.textPrimary, fontWeight: 600 }}
+                        icon={<CopyOutlined />}
+                        onClick={async () => {
+                            try {
+                                await navigator.clipboard.writeText(treeContextMenu.rawKey);
+                                setTreeContextMenu(null);
+                                message.success('已复制 Key 名称');
+                            } catch {
+                                message.error('复制失败');
+                            }
+                        }}
+                    >
+                        复制 Key 名称
+                    </Button>
+                </div>
+            ), document.body)}
         </div>
     );
 };

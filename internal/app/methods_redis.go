@@ -453,6 +453,23 @@ func (a *App) RedisRenameKey(config connection.ConnectionConfig, oldKey, newKey 
 	return connection.QueryResult{Success: true, Message: "重命名成功"}
 }
 
+// RedisKeyExists checks whether a key already exists
+func (a *App) RedisKeyExists(config connection.ConnectionConfig, key string) connection.QueryResult {
+	config.Type = "redis"
+	client, err := a.getRedisClient(config)
+	if err != nil {
+		return connection.QueryResult{Success: false, Message: err.Error()}
+	}
+
+	exists, err := client.KeyExists(key)
+	if err != nil {
+		logger.Error(err, "RedisKeyExists 检查失败：key=%s", key)
+		return connection.QueryResult{Success: false, Message: err.Error()}
+	}
+
+	return connection.QueryResult{Success: true, Data: map[string]bool{"exists": exists}}
+}
+
 // RedisDeleteHashField deletes fields from a hash
 func (a *App) RedisDeleteHashField(config connection.ConnectionConfig, key string, fields []string) connection.QueryResult {
 	config.Type = "redis"

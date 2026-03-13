@@ -32,7 +32,8 @@ import { Tree, message, Dropdown, MenuProps, Input, Button, Modal, Form, Badge, 
   CheckOutlined,
   FilterOutlined
 	} from '@ant-design/icons';
-	import { useStore } from '../store';
+import { useStore } from '../store';
+import { buildOverlayWorkbenchTheme } from '../utils/overlayWorkbenchTheme';
 	import { SavedConnection } from '../types';
 	import { DBGetDatabases, DBGetTables, DBQuery, DBShowCreateTable, ExportTable, OpenSQLFile, CreateDatabase, RenameDatabase, DropDatabase, RenameTable, DropTable, DropView, DropFunction, RenameView } from '../../wailsjs/go/app/App';
   import { normalizeOpacityForPlatform, resolveAppearanceValues } from '../utils/appearance';
@@ -121,41 +122,40 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
       return `rgba(${r}, ${g}, ${b}, ${opacity})`;
   };
   const bgMain = getBg('#141414');
+  const overlayTheme = useMemo(() => buildOverlayWorkbenchTheme(darkMode), [darkMode]);
   const modalPanelStyle = useMemo(() => ({
-      background: darkMode
-          ? 'linear-gradient(180deg, rgba(20,26,38,0.96) 0%, rgba(13,17,26,0.98) 100%)'
-          : 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(246,248,252,0.98) 100%)',
-      border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(16,24,40,0.08)',
-      boxShadow: darkMode ? '0 20px 48px rgba(0,0,0,0.38)' : '0 18px 42px rgba(15,23,42,0.12)',
-      backdropFilter: darkMode ? 'blur(18px)' : 'none',
-  }), [darkMode]);
+      background: overlayTheme.shellBg,
+      border: overlayTheme.shellBorder,
+      boxShadow: overlayTheme.shellShadow,
+      backdropFilter: overlayTheme.shellBackdropFilter,
+  }), [overlayTheme]);
   const modalSectionStyle = useMemo(() => ({
       padding: 14,
       borderRadius: 14,
-      border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(16,24,40,0.08)',
-      background: darkMode ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.84)',
-  }), [darkMode]);
+      border: overlayTheme.sectionBorder,
+      background: overlayTheme.sectionBg,
+  }), [overlayTheme]);
   const modalScrollSectionStyle = useMemo(() => ({
       maxHeight: 400,
       overflow: 'auto' as const,
-      border: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(16,24,40,0.08)',
+      border: overlayTheme.sectionBorder,
       borderRadius: 14,
       padding: 12,
-      background: darkMode ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.8)',
-  }), [darkMode]);
+      background: overlayTheme.sectionBg,
+  }), [overlayTheme]);
   const modalHintTextStyle = useMemo(() => ({
-      color: darkMode ? 'rgba(255,255,255,0.5)' : 'rgba(16,24,40,0.55)',
+      color: overlayTheme.mutedText,
       fontSize: 12,
       lineHeight: 1.6,
-  }), [darkMode]);
+  }), [overlayTheme]);
   const renderSidebarModalTitle = (icon: React.ReactNode, title: string, description: string) => (
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          <div style={{ width: 34, height: 34, borderRadius: 12, display: 'grid', placeItems: 'center', background: darkMode ? 'rgba(255,214,102,0.12)' : 'rgba(24,144,255,0.1)', color: darkMode ? '#ffd666' : '#1677ff', flexShrink: 0 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 12, display: 'grid', placeItems: 'center', background: overlayTheme.iconBg, color: overlayTheme.iconColor, flexShrink: 0 }}>
               {icon}
           </div>
           <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: darkMode ? '#f5f7ff' : '#162033' }}>{title}</div>
-              <div style={{ marginTop: 4, color: darkMode ? 'rgba(255,255,255,0.5)' : 'rgba(16,24,40,0.55)', fontSize: 12, lineHeight: 1.6 }}>{description}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: overlayTheme.titleText }}>{title}</div>
+              <div style={{ marginTop: 4, color: overlayTheme.mutedText, fontSize: 12, lineHeight: 1.6 }}>{description}</div>
           </div>
       </div>
   );
@@ -2535,12 +2535,10 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
   const searchScopePopoverContent = useMemo(() => {
       const smartSelected = searchScopes.includes('smart');
       const scopedOptions = SEARCH_SCOPE_OPTIONS.filter((option) => option.value !== 'smart');
-      const borderColor = darkMode ? 'rgba(255,255,255,0.08)' : 'rgba(16,24,40,0.08)';
-      const mutedTextColor = darkMode ? 'rgba(255,255,255,0.5)' : 'rgba(16,24,40,0.55)';
-      const titleColor = darkMode ? 'rgba(255,255,255,0.92)' : '#162033';
-      const panelBg = darkMode
-          ? 'linear-gradient(180deg, rgba(17,24,39,0.96) 0%, rgba(10,15,26,0.98) 100%)'
-          : 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(246,248,252,0.98) 100%)';
+      const borderColor = overlayTheme.sectionBorder.replace('1px solid ', '');
+      const mutedTextColor = overlayTheme.mutedText;
+      const titleColor = overlayTheme.titleText;
+      const panelBg = overlayTheme.shellBg;
       const smartBg = smartSelected
           ? (darkMode ? 'linear-gradient(135deg, rgba(255,214,102,0.22) 0%, rgba(255,179,71,0.16) 100%)' : 'linear-gradient(135deg, rgba(255,214,102,0.26) 0%, rgba(255,244,204,0.92) 100%)')
           : (darkMode ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.72)');
@@ -2591,7 +2589,7 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
                   </div>
               </label>
 
-              <div style={{ height: 1, background: borderColor, opacity: 0.9 }} />
+              <div style={{ height: 1, background: overlayTheme.divider, opacity: 0.9 }} />
 
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.3, color: mutedTextColor, textTransform: 'uppercase' }}>手动范围</div>
@@ -2628,7 +2626,7 @@ const Sidebar: React.FC<{ onEditConnection?: (conn: SavedConnection) => void }> 
               </div>
           </div>
       );
-  }, [darkMode, searchScopes]);
+  }, [darkMode, overlayTheme, searchScopes]);
 
   const parseHostOnlyToken = (value: unknown): string[] => {
       const raw = String(value || '').trim();
